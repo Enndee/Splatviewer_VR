@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 using System;
+using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
@@ -227,6 +228,41 @@ namespace GaussianSplatting.Runtime
         public TextAsset shData => m_SHData;
         public TextAsset chunkData => m_ChunkData;
         public CameraInfo[] cameras => m_Cameras;
+
+        // ── Runtime data (for loading files at runtime without TextAssets) ──
+        [NonSerialized] public byte[] runtimePosData;
+        [NonSerialized] public byte[] runtimeOtherData;
+        [NonSerialized] public byte[] runtimeColorData;
+        [NonSerialized] public byte[] runtimeSHData;
+
+        public bool HasPosData   => m_PosData   != null || runtimePosData   != null;
+        public bool HasOtherData => m_OtherData != null || runtimeOtherData != null;
+        public bool HasSHData    => m_SHData    != null || runtimeSHData    != null;
+        public bool HasColorData => m_ColorData != null || runtimeColorData != null;
+
+        public long GetPosDataSize()   => m_PosData   != null ? m_PosData.dataSize   : runtimePosData?.Length   ?? 0;
+        public long GetOtherDataSize() => m_OtherData != null ? m_OtherData.dataSize : runtimeOtherData?.Length ?? 0;
+        public long GetSHDataSize()    => m_SHData    != null ? m_SHData.dataSize    : runtimeSHData?.Length    ?? 0;
+        public long GetColorDataSize() => m_ColorData != null ? m_ColorData.dataSize : runtimeColorData?.Length ?? 0;
+
+        /// <summary>Returns a NativeArray view of position data (runtime or TextAsset).</summary>
+        public NativeArray<T> GetPosData<T>() where T : struct
+            => m_PosData != null ? m_PosData.GetData<T>() : ToNative<T>(runtimePosData);
+        public NativeArray<T> GetOtherData<T>() where T : struct
+            => m_OtherData != null ? m_OtherData.GetData<T>() : ToNative<T>(runtimeOtherData);
+        public NativeArray<T> GetSHData<T>() where T : struct
+            => m_SHData != null ? m_SHData.GetData<T>() : ToNative<T>(runtimeSHData);
+        public NativeArray<T> GetColorData<T>() where T : struct
+            => m_ColorData != null ? m_ColorData.GetData<T>() : ToNative<T>(runtimeColorData);
+
+        // NativeArray wrappers for runtime byte[] (caller must not outlive the byte[])
+        [NonSerialized] NativeArray<byte> m_RuntimeNativeBuffer;
+        static unsafe NativeArray<T> ToNative<T>(byte[] data) where T : struct
+        {
+            if (data == null) return default;
+            var native = new NativeArray<byte>(data, Allocator.Temp);
+            return native.Reinterpret<T>(1);
+        }
 
         public struct ChunkInfo
         {

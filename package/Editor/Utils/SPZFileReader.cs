@@ -19,7 +19,7 @@ namespace GaussianSplatting.Editor.Utils
     {
         struct SpzHeader {
             public uint magic; // 0x5053474e "NGSP"
-            public uint version; // 2
+            public uint version; // 2 or 3
             public uint numPoints;
             public uint sh_fracbits_flags_reserved;
         };
@@ -42,7 +42,7 @@ namespace GaussianSplatting.Editor.Utils
 
             if (header[0].magic != 0x5053474e)
                 throw new IOException($"SPZ {filePath} read error, header magic unexpected {header[0].magic}");
-            if (header[0].version != 2)
+            if (header[0].version < 2 || header[0].version > 3)
                 throw new IOException($"SPZ {filePath} read error, header version unexpected {header[0].version}");
 
             vertexCount = (int)header[0].numPoints;
@@ -160,21 +160,21 @@ namespace GaussianSplatting.Editor.Utils
                 splat.dc0 = GaussianUtils.SH0ToColor(col);
 
                 int shIdx = index * shCoeffs * 3;
-                splat.sh1 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh2 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh3 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh4 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh5 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh6 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh7 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh8 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh9 = UnpackSH(shIdx); shIdx += 3;
-                splat.shA = UnpackSH(shIdx); shIdx += 3;
-                splat.shB = UnpackSH(shIdx); shIdx += 3;
-                splat.shC = UnpackSH(shIdx); shIdx += 3;
-                splat.shD = UnpackSH(shIdx); shIdx += 3;
-                splat.shE = UnpackSH(shIdx); shIdx += 3;
-                splat.shF = UnpackSH(shIdx); shIdx += 3;
+                if (shCoeffs > 0)  { splat.sh1 = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 1)  { splat.sh2 = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 2)  { splat.sh3 = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 3)  { splat.sh4 = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 4)  { splat.sh5 = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 5)  { splat.sh6 = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 6)  { splat.sh7 = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 7)  { splat.sh8 = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 8)  { splat.sh9 = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 9)  { splat.shA = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 10) { splat.shB = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 11) { splat.shC = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 12) { splat.shD = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 13) { splat.shE = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
+                if (shCoeffs > 14) { splat.shF = UnpackSH(shIdx); shIdx += 3; } else shIdx += 3;
 
                 splats[index] = splat;
             }

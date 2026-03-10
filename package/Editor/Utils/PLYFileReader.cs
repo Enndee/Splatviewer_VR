@@ -34,6 +34,7 @@ namespace GaussianSplatting.Editor.Utils
             attrs = new List<(string, ElementType)>();
             const int kMaxHeaderLines = 9000;
             bool got_binary_le = false;
+            bool inVertexElement = false;
             for (int lineIdx = 0; lineIdx < kMaxHeaderLines; ++lineIdx)
             {
                 var line = ReadLine(fs);
@@ -42,9 +43,14 @@ namespace GaussianSplatting.Editor.Utils
                 var tokens = line.Split(' ');
                 if (tokens.Length == 3 && tokens[0] == "format" && tokens[1] == "binary_little_endian" && tokens[2] == "1.0")
                     got_binary_le = true;
-                if (tokens.Length == 3 && tokens[0] == "element" && tokens[1] == "vertex")
-                    vertexCount = int.Parse(tokens[2]);
-                if (tokens.Length == 3 && tokens[0] == "property")
+                if (tokens.Length >= 2 && tokens[0] == "element")
+                {
+                    // Start tracking properties only for "element vertex"; stop for any other element
+                    inVertexElement = tokens[1] == "vertex";
+                    if (inVertexElement && tokens.Length == 3)
+                        vertexCount = int.Parse(tokens[2]);
+                }
+                if (inVertexElement && tokens.Length == 3 && tokens[0] == "property")
                 {
                     ElementType type = tokens[1] switch
                     {
@@ -62,6 +68,77 @@ namespace GaussianSplatting.Editor.Utils
             {
                 throw new IOException($"PLY {filePath} not supported: needs to be binary, little endian PLY format");
             }
+        }
+
+        /// <summary>
+        /// Parses a SHARP-format PLY that embeds an "element extrinsic 16" section after the vertex data.
+        /// Returns true and fills <paramref name="mat"/> when the section is found; false otherwise.
+        /// </summary>
+        public static bool TryReadSharpExtrinsic(string filePath, out float[] mat)
+        {
+            mat = null;
+            if (!File.Exists(filePath))
+                return false;
+
+            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+
+            // ── parse header manually so we can track ALL elements ─────────
+            int vertexCount = 0, vertexStride = 0;
+            bool inVertex = false;
+            int extrinsicCount = 0;
+
+            // We need the full element list to know how many bytes to skip.
+            // Store non-vertex elements as (count, byteSize) so we can seek past them.
+            var extraElements = new List<(int count, int stride)>();    // elements BEFORE extrinsic
+            int currentExtraCount = 0, currentExtraStride = 0;
+            bool inExtra = false, foundExtrinsic = false;
+            bool gotBinaryLe = false;
+
+            const int kMaxLines = 9000;
+            for (int i = 0; i < kMaxLines; i++)
+            {
+                var line = ReadLine(fs);
+                if (line == "end_header") break;
+                var tok = line.Split(' ');
+
+                if (tok.Length == 3 && tok[0] == "format" && tok[1] == "binary_little_endian") gotBinaryLe = true;
+
+                if (tok.Length >= 2 && tok[0] == "element")
+                {
+                    // Save previous extra element
+                    if (inExtra) extraElements.Add((currentExtraCount, currentExtraStride));
+
+                    inVertex = tok[1] == "vertex";
+                    inExtra  = !inVertex;
+                    if (tok[1] == "extrinsic") { foundExtrinsic = true; extrinsicCount = tok.Length == 3 ? int.Parse(tok[2]) : 0; }
+                    currentExtraCount  = (tok.Length == 3 && !inVertex) ? int.Parse(tok[2]) : 0;
+                    currentExtraStride = 0;
+                }
+
+                if (tok.Length == 3 && tok[0] == "property")
+                {
+                    int sz = tok[1] switch { "float" => 4, "double" => 8, "int" => 4, "uint" => 4, "uchar" => 1, _ => 0 };
+                    if (inVertex)  { vertexStride += sz; if (!foundExtrinsic) { /* only vertex */ } }
+                    if (inExtra && !foundExtrinsic) currentExtraStride += sz;
+                    // properties that belong to extrinsic itself don't matter for skipping
+                }
+            }
+            // Save last extra element if it wasn't extrinsic
+            if (inExtra && !foundExtrinsic) extraElements.Add((currentExtraCount, currentExtraStride));
+
+            if (!gotBinaryLe || !foundExtrinsic || extrinsicCount != 16) return false;
+
+            // ── skip vertex data ──────────────────────────────────────────
+            long skip = (long)vertexCount * vertexStride;
+            // skip any extra elements that appear BEFORE extrinsic
+            foreach (var (cnt, stride) in extraElements) skip += (long)cnt * stride;
+            fs.Seek(skip, SeekOrigin.Current);
+
+            // ── read 16 floats ────────────────────────────────────────────
+            using var br = new System.IO.BinaryReader(fs, System.Text.Encoding.UTF8, leaveOpen: true);
+            mat = new float[16];
+            for (int j = 0; j < 16; j++) mat[j] = br.ReadSingle();
+            return true;
         }
 
         public static void ReadFile(string filePath, out int vertexCount, out int vertexStride, out List<(string, ElementType)> attrs, out NativeArray<byte> vertices)

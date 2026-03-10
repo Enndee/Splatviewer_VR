@@ -262,6 +262,12 @@ namespace GaussianSplatting.Editor
 
             EditorUtility.DisplayProgressBar(kProgressTitle, "Reading data files", 0.0f);
             GaussianSplatAsset.CameraInfo[] cameras = LoadJsonCamerasFile(m_InputFile, m_ImportCameras);
+            // Fallback: if no cameras.json was found and this is a SHARP PLY, extract the embedded extrinsic
+            if (cameras == null && m_InputFile.EndsWith(".ply", System.StringComparison.OrdinalIgnoreCase))
+                cameras = LoadSharpExtrinsicCamera(m_InputFile);
+            // Fallback: if this is an SPZ, look for a _camera.json sidecar saved by SHARP_to_Splatapult
+            if (cameras == null && m_InputFile.EndsWith(".spz", System.StringComparison.OrdinalIgnoreCase))
+                cameras = LoadSharpCameraSidecar(m_InputFile);
             using NativeArray<InputSplatData> inputSplats = LoadInputSplatFile(m_InputFile);
             if (inputSplats.Length == 0)
             {
@@ -1063,6 +1069,90 @@ namespace GaussianSplatting.Editor
                 EmitSimpleDataFile(data, filePath, ref dataHash);
                 data.Dispose();
             }
+        }
+
+        static GaussianSplatAsset.CameraInfo[] LoadSharpCameraSidecar(string spzPath)
+        {
+            // Look for <stem>_camera.json next to the SPZ file
+            string dir  = Path.GetDirectoryName(spzPath);
+            string stem = Path.GetFileNameWithoutExtension(spzPath);
+            string sidecar = Path.Combine(dir, stem + "_camera.json");
+            if (!File.Exists(sidecar))
+                return null;
+
+            try
+            {
+                string json = File.ReadAllText(sidecar);
+                var doc = JSONParser.FromJson<SharpCameraJson>(json);
+                if (doc?.extrinsic_4x4_row_major == null || doc.extrinsic_4x4_row_major.Length != 16)
+                    return null;
+
+                float[] m = doc.extrinsic_4x4_row_major;
+                // Reuse the same conversion as LoadSharpExtrinsicCamera
+                var right = new Vector3( m[0],  m[1],  m[2]);
+                var up    = new Vector3(-m[4], -m[5], -m[6]);
+                var fwd   = new Vector3(-m[8], -m[9], -m[10]);
+                float tx  = m[3], ty = m[7], tz = m[11];
+                float px  = -(right.x * tx + up.x * (-ty) + fwd.x * (-tz));
+                float py  = -(right.y * tx + up.y * (-ty) + fwd.y * (-tz));
+                float pz  = -(right.z * tx + up.z * (-ty) + fwd.z * (-tz));
+
+                var cam = new GaussianSplatAsset.CameraInfo
+                {
+                    pos   = new Vector3(px, py, pz),
+                    axisX = right,
+                    axisY = up,
+                    axisZ = fwd,
+                    fov   = 60f
+                };
+                Debug.Log($"[SharpImport] Loaded sidecar camera from {Path.GetFileName(sidecar)}: pos={cam.pos}");
+                return new[] { cam };
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[SharpImport] Failed to read sidecar {sidecar}: {e.Message}");
+                return null;
+            }
+        }
+
+        [Serializable]
+        class SharpCameraJson { public float[] extrinsic_4x4_row_major; }
+
+        static GaussianSplatAsset.CameraInfo[] LoadSharpExtrinsicCamera(string plyPath)
+        {
+            if (!PLYFileReader.TryReadSharpExtrinsic(plyPath, out float[] m))
+                return null;
+
+            // SHARP extrinsic is a row-major 4x4 world-to-camera matrix [R|t; 0 1]
+            // Camera position in world = -R^T * t
+            // Unity uses left-handed Y-up; SHARP uses right-handed Y-down (OpenCV), so flip Y and Z.
+            var R = new UnityEngine.Matrix4x4();
+            for (int r = 0; r < 4; r++)
+                for (int c = 0; c < 4; c++)
+                    R[r, c] = m[r * 4 + c];
+
+            // Extract rotation (upper-left 3x3 rows) and translation (4th column)
+            var right  = new Vector3( R[0, 0],  R[0, 1],  R[0, 2]);
+            var up     = new Vector3(-R[1, 0], -R[1, 1], -R[1, 2]); // flip Y
+            var fwd    = new Vector3(-R[2, 0], -R[2, 1], -R[2, 2]); // flip Z
+            float tx   = R[0, 3], ty = R[1, 3], tz = R[2, 3];
+
+            // Camera world position: -R^T * t, with Y and Z axis flip
+            float px  = -(right.x * tx + up.x * (-ty) + fwd.x * (-tz));
+            float py  = -(right.y * tx + up.y * (-ty) + fwd.y * (-tz));
+            float pz  = -(right.z * tx + up.z * (-ty) + fwd.z * (-tz));
+
+            var cam = new GaussianSplatAsset.CameraInfo
+            {
+                pos   = new Vector3(px, py, pz),
+                axisX = right,
+                axisY = up,
+                axisZ = fwd,
+                fov   = 60f
+            };
+
+            Debug.Log($"[SharpImport] Extracted extrinsic camera: pos={cam.pos}, fwd={cam.axisZ}");
+            return new[] { cam };
         }
 
         static GaussianSplatAsset.CameraInfo[] LoadJsonCamerasFile(string curPath, bool doImport)
