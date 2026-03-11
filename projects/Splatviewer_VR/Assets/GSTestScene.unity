@@ -156,6 +156,7 @@ MonoBehaviour:
   stickDeadzone: 0.2
   snapAngle: 45
   mouseSensitivity: 2
+  lockCursorInDesktopMode: 1
 --- !u!114 &13104420
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -219,7 +220,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   loader: {fileID: 0}
   cycler: {fileID: 0}
-  startPath: D:\Gaussian_Splatting\Testsplats\Testordner_spz
+  startPath: 
   spawnDistance: 1
 --- !u!1 &89606358
 GameObject:
@@ -328,7 +329,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   rotationSpeed: 45
-  startEuler: {x: 0, y: 0, z: 0}
+  startEuler: {x: 180, y: 0, z: 0}
 --- !u!114 &657962664
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -358,8 +359,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   loader: {fileID: 0}
-  splatFolder: D:\Gaussian_Splatting\Testsplats\Testordner_spz
-  autoLoadFirst: 1
+  splatFolder: 
+  autoLoadFirst: 0
   _currentFile: (none)
   _currentIndex: -1
   _totalFiles: 0

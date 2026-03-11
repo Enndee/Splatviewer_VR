@@ -8,7 +8,7 @@ using UnityEngine.UI;
 using UnityEngine.XR;
 
 /// <summary>
-/// World-space VR file browser for browsing the file system and loading .ply/.spz/.sog splat files.
+/// World-space VR file browser for browsing the file system and loading .ply/.spz/.sog/.spx splat files.
 ///
 /// VR Controls:
 ///   Left Y (secondaryButton)  → toggle browser open/close

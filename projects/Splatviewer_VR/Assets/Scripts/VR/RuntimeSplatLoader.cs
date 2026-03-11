@@ -9,7 +9,7 @@ using Unity.Mathematics;
 using UnityEngine;
 
 /// <summary>
-/// Loads .ply, .spz, and bundled PlayCanvas .sog Gaussian Splat files at runtime,
+/// Loads .ply, .spz, .sog, and .spx Gaussian Splat files at runtime,
 /// creating a GaussianSplatAsset in memory and assigning it to a GaussianSplatRenderer.
 /// Uses Float32 quality (no chunking) for maximum simplicity.
 /// </summary>
@@ -29,7 +29,7 @@ public class RuntimeSplatLoader : MonoBehaviour
     public static bool IsSupportedFileExtension(string filePath)
     {
         string ext = Path.GetExtension(filePath).ToLowerInvariant();
-        return ext == ".ply" || ext == ".spz" || ext == ".sog";
+        return ext == ".ply" || ext == ".spz" || ext == ".sog" || ext == ".spx";
     }
 
     /// <summary>Load a .ply, .spz, or bundled .sog file from disk and display it.</summary>
@@ -55,7 +55,9 @@ public class RuntimeSplatLoader : MonoBehaviour
                 ? ReadSpz(filePath)
                 : ext == ".sog"
                     ? PlayCanvasSogReader.ReadFile(filePath)
-                    : ReadPly(filePath);
+                    : ext == ".spx"
+                        ? SpxReader.ReadFile(filePath)
+                        : ReadPly(filePath);
             if (splats == null || splats.Length == 0)
                 return false;
 
