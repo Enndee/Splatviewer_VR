@@ -119,30 +119,6 @@ internal static class SpxReader
         if (shPalette != null)
             ApplySHPalette(splats, shPalette);
 
-        // Diagnostic logging
-        if (splats.Length > 0)
-        {
-            float3 dMin = splats[0].pos, dMax = splats[0].pos;
-            float opMin = splats[0].opacity, opMax = splats[0].opacity;
-            float sMin = math.cmin(splats[0].scale), sMax = math.cmax(splats[0].scale);
-            for (int i = 0; i < splats.Length; i++)
-            {
-                dMin = math.min(dMin, splats[i].pos);
-                dMax = math.max(dMax, splats[i].pos);
-                opMin = math.min(opMin, splats[i].opacity);
-                opMax = math.max(opMax, splats[i].opacity);
-                sMin = math.min(sMin, math.cmin(splats[i].scale));
-                sMax = math.max(sMax, math.cmax(splats[i].scale));
-            }
-            var s0 = splats[0];
-            UnityEngine.Debug.Log($"[SpxReader] {splats.Length:N0} splats from {splatChunks.Count} blocks. " +
-                $"Bounds: ({dMin.x:F2},{dMin.y:F2},{dMin.z:F2})-({dMax.x:F2},{dMax.y:F2},{dMax.z:F2}). " +
-                $"Opacity: {opMin:F3}-{opMax:F3}. Scale: {sMin:E2}-{sMax:E2}. " +
-                $"First: pos=({s0.pos.x:F3},{s0.pos.y:F3},{s0.pos.z:F3}) " +
-                $"dc0=({s0.dc0.x:F3},{s0.dc0.y:F3},{s0.dc0.z:F3}) op={s0.opacity:F3} " +
-                $"scale=({s0.scale.x:E2},{s0.scale.y:E2},{s0.scale.z:E2})");
-        }
-
         return splats;
     }
 

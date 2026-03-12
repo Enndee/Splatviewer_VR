@@ -22,11 +22,13 @@ namespace GaussianSplatting.Editor
         const string kProgressTitle = "Creating Gaussian Splat Asset";
         const string kCamerasJson = "cameras.json";
         const string kPrefQuality = "nesnausk.GaussianSplatting.CreatorQuality";
+        const string kPrefQualityVersion = "nesnausk.GaussianSplatting.CreatorQualityVersion";
         const string kPrefOutputFolder = "nesnausk.GaussianSplatting.CreatorOutputFolder";
+        const int kCurrentQualityPrefVersion = 2;
 
         enum DataQuality
         {
-            VeryHigh,
+            Lossless,
             High,
             Medium,
             Low,
@@ -40,7 +42,7 @@ namespace GaussianSplatting.Editor
         [SerializeField] bool m_ImportCameras = true;
 
         [SerializeField] string m_OutputFolder = "Assets/GaussianAssets";
-        [SerializeField] DataQuality m_Quality = DataQuality.Medium;
+        [SerializeField] DataQuality m_Quality = DataQuality.Lossless;
         [SerializeField] GaussianSplatAsset.VectorFormat m_FormatPos;
         [SerializeField] GaussianSplatAsset.VectorFormat m_FormatScale;
         [SerializeField] GaussianSplatAsset.ColorFormat m_FormatColor;
@@ -57,6 +59,8 @@ namespace GaussianSplatting.Editor
             m_FormatColor != GaussianSplatAsset.ColorFormat.Float32x4 ||
             m_FormatSH != GaussianSplatAsset.SHFormat.Float32;
 
+        bool isLosslessImport => !isUsingChunks;
+
         [MenuItem("Tools/Gaussian Splats/Create GaussianSplatAsset")]
         public static void Init()
         {
@@ -68,7 +72,17 @@ namespace GaussianSplatting.Editor
 
         void Awake()
         {
-            m_Quality = (DataQuality)EditorPrefs.GetInt(kPrefQuality, (int)DataQuality.Medium);
+            int qualityPrefVersion = EditorPrefs.GetInt(kPrefQualityVersion, 0);
+            if (qualityPrefVersion < kCurrentQualityPrefVersion)
+            {
+                m_Quality = DataQuality.Lossless;
+                EditorPrefs.SetInt(kPrefQuality, (int)m_Quality);
+                EditorPrefs.SetInt(kPrefQualityVersion, kCurrentQualityPrefVersion);
+            }
+            else
+            {
+                m_Quality = (DataQuality)EditorPrefs.GetInt(kPrefQuality, (int)DataQuality.Lossless);
+            }
             m_OutputFolder = EditorPrefs.GetString(kPrefOutputFolder, "Assets/GaussianAssets");
         }
 
@@ -122,8 +136,14 @@ namespace GaussianSplatting.Editor
             {
                 m_Quality = newQuality;
                 EditorPrefs.SetInt(kPrefQuality, (int)m_Quality);
+                EditorPrefs.SetInt(kPrefQualityVersion, kCurrentQualityPrefVersion);
                 ApplyQualityLevel();
             }
+
+            if (m_Quality == DataQuality.Lossless)
+                EditorGUILayout.HelpBox("Lossless import is enabled. Gaussian count stays the same, Float32 data is kept, and no chunk-based quantization or SH clustering is applied.", MessageType.Info);
+            else if (m_Quality != DataQuality.Custom)
+                EditorGUILayout.HelpBox("This preset modifies imported splat data to reduce asset size. Use Lossless if you want to keep full precision on import.", MessageType.Warning);
 
             long sizePos = 0, sizeOther = 0, sizeCol = 0, sizeSHs = 0, totalSize = 0;
             if (m_PrevVertexCount > 0)
@@ -165,7 +185,12 @@ namespace GaussianSplatting.Editor
             EditorGUI.indentLevel--;
             EditorGUI.EndDisabledGroup();
             if (totalSize > 0)
-                EditorGUILayout.LabelField("Asset Size", $"{EditorUtility.FormatBytes(totalSize)} - {(double) m_PrevFileSize / totalSize:F2}x smaller");
+            {
+                if (isLosslessImport)
+                    EditorGUILayout.LabelField("Asset Size", $"{EditorUtility.FormatBytes(totalSize)} - lossless import, same splat count");
+                else
+                    EditorGUILayout.LabelField("Asset Size", $"{EditorUtility.FormatBytes(totalSize)} - {(double)m_PrevFileSize / totalSize:F2}x smaller");
+            }
             else
                 GUILayout.Space(EditorGUIUtility.singleLineHeight);
 
@@ -192,6 +217,12 @@ namespace GaussianSplatting.Editor
             {
                 case DataQuality.Custom:
                     break;
+                case DataQuality.Lossless: // preserve source splats without quantization or clustering
+                    m_FormatPos = GaussianSplatAsset.VectorFormat.Float32;
+                    m_FormatScale = GaussianSplatAsset.VectorFormat.Float32;
+                    m_FormatColor = GaussianSplatAsset.ColorFormat.Float32x4;
+                    m_FormatSH = GaussianSplatAsset.SHFormat.Float32;
+                    break;
                 case DataQuality.VeryLow: // 18.62x smaller, 32.27 PSNR
                     m_FormatPos = GaussianSplatAsset.VectorFormat.Norm11;
                     m_FormatScale = GaussianSplatAsset.VectorFormat.Norm6;
@@ -215,12 +246,6 @@ namespace GaussianSplatting.Editor
                     m_FormatScale = GaussianSplatAsset.VectorFormat.Norm16;
                     m_FormatColor = GaussianSplatAsset.ColorFormat.Float16x4;
                     m_FormatSH = GaussianSplatAsset.SHFormat.Norm11;
-                    break;
-                case DataQuality.VeryHigh: // 1.05x smaller
-                    m_FormatPos = GaussianSplatAsset.VectorFormat.Float32;
-                    m_FormatScale = GaussianSplatAsset.VectorFormat.Float32;
-                    m_FormatColor = GaussianSplatAsset.ColorFormat.Float32x4;
-                    m_FormatSH = GaussianSplatAsset.SHFormat.Float32;
                     break;
                 default:
                     throw new ArgumentOutOfRangeException();
@@ -284,8 +309,11 @@ namespace GaussianSplatting.Editor
             };
             boundsJob.Schedule().Complete();
 
-            EditorUtility.DisplayProgressBar(kProgressTitle, "Morton reordering", 0.05f);
-            ReorderMorton(inputSplats, boundsMin, boundsMax);
+            if (!isLosslessImport)
+            {
+                EditorUtility.DisplayProgressBar(kProgressTitle, "Morton reordering", 0.05f);
+                ReorderMorton(inputSplats, boundsMin, boundsMax);
+            }
 
             // cluster SHs
             NativeArray<int> splatSHIndices = default;

@@ -91,6 +91,15 @@ public class VRFileBrowser : MonoBehaviour
     bool _trigReady = true;
     bool _toggleReady = true;
     bool _backReady = true;
+    bool _preloadToggleReady = true;
+    bool _movieBtnReady = true;
+    float _fpsAdjustCD;
+
+    // Movie mode
+    enum MovieState { Idle, Loading, Playing }
+    MovieState _movieState = MovieState.Idle;
+    int _movieLoadedCount;
+    int _movieTotalCount;
 
     struct Entry
     {
@@ -122,6 +131,57 @@ public class VRFileBrowser : MonoBehaviour
         // Clear the one-frame guard from previous frame
         WasOpenThisFrame = IsOpen;
 
+        // Movie loading pump — runs even when browser is closed
+        if (_movieState == MovieState.Loading)
+        {
+            bool done = cycler != null && cycler.PumpMovieLoad();
+            if (done)
+            {
+                if (cycler != null && cycler.IsMovieReady)
+                {
+                    _movieState = MovieState.Playing;
+                    cycler.StartMoviePlayback();
+                    Debug.Log("[VRFileBrowser] Movie loading complete — playback started");
+                    if (IsOpen) ToggleBrowser(); // close browser when playback starts
+                }
+                else
+                {
+                    _movieState = MovieState.Idle;
+                    Debug.LogWarning("[VRFileBrowser] Movie loading failed");
+                }
+                UpdateHelpText();
+            }
+            // Block all other input during loading
+            if (_movieState == MovieState.Loading)
+            {
+                UpdateHelpText(); // refresh progress
+                return;
+            }
+        }
+
+        // Movie FPS adjustment — works even when browser is closed during playback
+        if (_movieState == MovieState.Playing)
+            HandleMovieFpsAdjust();
+
+        // Movie stop — M key or left grip + thumbstick click stops playback
+        if (_movieState == MovieState.Playing)
+        {
+            bool stopBtn = false;
+            if (XRSettings.isDeviceActive)
+                stopBtn = ReadButton(XRNode.LeftHand, CommonUsages.secondaryButton); // Y to stop
+            else
+                stopBtn = Input.GetKeyDown(KeyCode.M);
+
+            if (stopBtn && _movieBtnReady)
+            {
+                _movieBtnReady = false;
+                StopMovieMode();
+                return;
+            }
+            else if (!stopBtn)
+                _movieBtnReady = true;
+        }
+
         // Toggle: left Y button or Esc/Tab key on desktop
         bool yBtn = ReadButton(XRNode.LeftHand, CommonUsages.secondaryButton);
         if (yBtn && _toggleReady) { ToggleBrowser(); _toggleReady = false; }
@@ -136,12 +196,18 @@ public class VRFileBrowser : MonoBehaviour
         HandleNavigation();
         HandleSelect();
         HandleBack();
+        HandlePreloadToggle();
+        HandleMovieButton();
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
     public void ToggleBrowser()
     {
+        // Block closing while movie is loading
+        if (IsOpen && _movieState == MovieState.Loading)
+            return;
+
         IsOpen = !IsOpen;
         _root.SetActive(IsOpen);
         if (IsOpen)
@@ -226,6 +292,150 @@ public class VRFileBrowser : MonoBehaviour
         {
             _backReady = true;
         }
+    }
+
+    void HandlePreloadToggle()
+    {
+        bool pressed = false;
+        if (XRSettings.isDeviceActive)
+            pressed = ReadButton(XRNode.LeftHand, CommonUsages.primaryButton); // X on left controller
+        else
+            pressed = Input.GetKeyDown(KeyCode.P);
+
+        if (pressed && _preloadToggleReady)
+        {
+            _preloadToggleReady = false;
+            if (cycler != null)
+            {
+                cycler.preloadUpcomingFiles = !cycler.preloadUpcomingFiles;
+                cycler.ApplyPreloadBudget();
+                if (cycler.preloadUpcomingFiles)
+                    cycler.RefreshPreloadWindow();
+                else if (cycler.loader != null)
+                    cycler.loader.SetPreloadTargets(Array.Empty<string>());
+                Debug.Log($"[VRFileBrowser] Preloading {(cycler.preloadUpcomingFiles ? "ON" : "OFF")}");
+            }
+            UpdateHelpText();
+        }
+        else if (!pressed)
+        {
+            _preloadToggleReady = true;
+        }
+    }
+
+    void HandleMovieButton()
+    {
+        bool pressed = false;
+        if (XRSettings.isDeviceActive)
+        {
+            // Use right thumbstick press for movie mode
+            var devs = new List<InputDevice>();
+            InputDevices.GetDevicesAtXRNode(XRNode.RightHand, devs);
+            if (devs.Count > 0)
+                devs[0].TryGetFeatureValue(CommonUsages.primary2DAxisClick, out pressed);
+        }
+        else
+        {
+            pressed = Input.GetKeyDown(KeyCode.M);
+        }
+
+        if (pressed && _movieBtnReady)
+        {
+            _movieBtnReady = false;
+            if (_movieState == MovieState.Idle)
+                StartMovieMode();
+        }
+        else if (!pressed)
+        {
+            _movieBtnReady = true;
+        }
+    }
+
+    void HandleMovieFpsAdjust()
+    {
+        if (cycler == null) return;
+
+        float rx = 0f;
+        if (XRSettings.isDeviceActive)
+        {
+            // Use left stick X for FPS adjustment
+            var devs = new List<InputDevice>();
+            InputDevices.GetDevicesAtXRNode(XRNode.LeftHand, devs);
+            if (devs.Count > 0 && devs[0].TryGetFeatureValue(CommonUsages.primary2DAxis, out Vector2 v))
+                rx = v.x;
+        }
+        else
+        {
+            if (Input.GetKey(KeyCode.RightArrow)) rx = 1f;
+            if (Input.GetKey(KeyCode.LeftArrow)) rx = -1f;
+        }
+
+        _fpsAdjustCD -= Time.deltaTime;
+        if (Mathf.Abs(rx) > 0.5f && _fpsAdjustCD <= 0f)
+        {
+            cycler.AdjustMovieFps(rx > 0 ? 1 : -1);
+            _fpsAdjustCD = 0.15f;
+        }
+        else if (Mathf.Abs(rx) <= 0.3f)
+        {
+            _fpsAdjustCD = 0f;
+        }
+    }
+
+    void StartMovieMode()
+    {
+        // Sync the cycler to the browser's current folder so we always load
+        // from the directory the user is actually looking at, not the last
+        // folder a file was selected from.
+        if (cycler != null && !string.IsNullOrEmpty(_currentPath))
+        {
+            cycler.splatFolder = _currentPath;
+            cycler.ScanFolder();
+        }
+
+        if (cycler == null || cycler.Files.Count == 0)
+        {
+            Debug.LogWarning("[VRFileBrowser] No files loaded to start movie mode");
+            return;
+        }
+
+        var (fits, estMB, availMB) = cycler.CheckMovieFit();
+        if (!fits)
+        {
+            Debug.LogError($"[VRFileBrowser] Movie mode: not enough RAM! Need ~{estMB}MB, available ~{availMB}MB");
+            _pathText.text = $"Not enough RAM! Need ~{estMB}MB, have ~{availMB}MB";
+            return;
+        }
+
+        _movieLoadedCount = 0;
+        _movieTotalCount = cycler.Files.Count;
+        _movieState = MovieState.Loading;
+
+        bool started = cycler.BeginMovieLoad((loaded, total) =>
+        {
+            _movieLoadedCount = loaded;
+            _movieTotalCount = total;
+        });
+
+        if (!started)
+        {
+            _movieState = MovieState.Idle;
+            Debug.LogError("[VRFileBrowser] Failed to start movie loading");
+        }
+        else
+        {
+            Debug.Log($"[VRFileBrowser] Movie loading started: {_movieTotalCount} frames (~{estMB}MB)");
+        }
+
+        UpdateHelpText();
+    }
+
+    void StopMovieMode()
+    {
+        if (cycler != null)
+            cycler.StopMovie();
+        _movieState = MovieState.Idle;
+        UpdateHelpText();
     }
 
     // ── File System ───────────────────────────────────────────────────────────
@@ -320,6 +530,10 @@ public class VRFileBrowser : MonoBehaviour
         {
             if (loader != null)
             {
+                // Stop any active movie playback/loading before loading a new file
+                if (_movieState != MovieState.Idle)
+                    StopMovieMode();
+
                 bool ok = loader.LoadFile(entry.path);
                 if (ok)
                 {
@@ -415,10 +629,10 @@ public class VRFileBrowser : MonoBehaviour
         var helpPanel = MakeChild(_root.transform, "HelpPanel");
         var helpBg = helpPanel.AddComponent<Image>();
         helpBg.color = new Color(0.05f, 0.05f, 0.07f, 0.92f);
-        SetRect(helpPanel, CW + 24, -PAD, 320, 260);
+        SetRect(helpPanel, CW + 24, -PAD, 340, 380);
 
         _helpText = MakeText(helpPanel.transform, "Help", "", FONT_HINT, Color.white,
-            16, -16, 288, 228, TextAnchor.UpperLeft);
+            16, -16, 308, 348, TextAnchor.UpperLeft);
         _helpText.horizontalOverflow = HorizontalWrapMode.Wrap;
         _helpText.verticalOverflow = VerticalWrapMode.Overflow;
         UpdateHelpText();
@@ -513,7 +727,17 @@ public class VRFileBrowser : MonoBehaviour
         string controls = XRSettings.isDeviceActive
             ? "[L/R Stick] Navigate    [L/R Trigger or A] Select    [B] Back    [Y] Close"
             : "[Arrows] Navigate    [Enter] Select    [Backspace] Back    [Esc/Tab] Close";
-        _hintText.text = $"{countInfo}\n{controls}";
+
+        string movieInfo = "";
+        if (_movieState == MovieState.Playing && cycler != null)
+            movieInfo = $"   |   Movie: {cycler.movieFps} FPS";
+        else if (_movieState == MovieState.Loading)
+        {
+            float pct = _movieTotalCount > 0 ? (float)_movieLoadedCount / _movieTotalCount * 100f : 0f;
+            movieInfo = $"   |   Movie: Loading {_movieLoadedCount}/{_movieTotalCount} ({pct:F0}%)";
+        }
+
+        _hintText.text = $"{countInfo}\n{controls}{movieInfo}";
         UpdateHelpText();
     }
 
@@ -521,31 +745,64 @@ public class VRFileBrowser : MonoBehaviour
     {
         if (_helpText == null) return;
 
+        bool preloadOn = cycler != null && cycler.preloadUpcomingFiles;
+        string preloadStatus = preloadOn
+            ? $"Preload: ON ({cycler.preloadRamFraction:P0} RAM)"
+            : "Preload: OFF";
+
+        // Movie status line
+        string movieStatus;
+        if (_movieState == MovieState.Loading)
+        {
+            float pct = _movieTotalCount > 0 ? (float)_movieLoadedCount / _movieTotalCount * 100f : 0f;
+            movieStatus = $"Movie: LOADING {_movieLoadedCount}/{_movieTotalCount} ({pct:F0}%)";
+        }
+        else if (_movieState == MovieState.Playing)
+        {
+            int fps = cycler != null ? cycler.movieFps : 0;
+            int frames = cycler != null && cycler.loader != null ? cycler.loader.MovieFrameCount : 0;
+            movieStatus = $"Movie: PLAYING {fps} FPS ({frames} frames)";
+        }
+        else
+        {
+            movieStatus = "Movie: OFF";
+        }
+
         _helpText.text = XRSettings.isDeviceActive
             ? "Browser\n"
             + "Y: open / close\n"
-            + "Left or right stick: browse list\n"
-            + "Left or right trigger: open / load\n"
-            + "A: open / load\n"
-            + "B: parent folder\n\n"
+            + "Stick: browse list\n"
+            + "Trigger / A: open / load\n"
+            + "B: parent folder\n"
+            + "X: toggle preload\n"
+            + "R-Stick click: start movie\n\n"
+            + "Movie Playback\n"
+            + "L-Stick left/right: FPS -/+\n"
+            + "Y: stop movie\n\n"
             + "Scene\n"
-            + "Hold left grip + right stick: rotate splat\n"
-            + "Hold left grip + X: flip\n"
-            + "Hold left grip + A: reset rotation"
+            + "L-Grip + R-Stick: rotate splat\n"
+            + "L-Grip + X: flip\n"
+            + "L-Grip + A: reset rotation\n\n"
+            + preloadStatus + "\n"
+            + movieStatus
             : "Browser\n"
-                + "Esc / Tab: open / close\n"
-            + "Arrows: browse list\n"
+            + "Esc / Tab: open / close\n"
+            + "Up / Down: browse list\n"
             + "Enter: open / load\n"
-            + "Backspace: parent folder\n\n"
+            + "Backspace: parent folder\n"
+            + "P: toggle preload\n"
+            + "M: start / stop movie\n\n"
+            + "Movie Playback\n"
+            + "Left / Right: FPS -/+\n"
+            + "M: stop movie\n\n"
             + "Scene\n"
-                + "Mouse: look\n"
-                + "WASD: move\n"
-                + "Space / C: up / down\n"
-                + "R / F: next / previous splat\n"
-                + "Q / E: rotate splat\n"
-                + "Left Click: capture mouse\n"
-                + "Home: reset rotation\n"
-                + "End: flip upside down";
+            + "Mouse: look    WASD: move\n"
+            + "Space / C: up / down\n"
+            + "R / F: next / previous splat\n"
+            + "Q / E: rotate splat\n"
+            + "Home: reset    End: flip\n\n"
+            + preloadStatus + "\n"
+            + movieStatus;
     }
 
     void EnsureVisible()

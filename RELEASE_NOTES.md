@@ -1,5 +1,28 @@
 # Splatviewer_VR Release Notes
 
+## Version 1.4
+
+Adds runtime `.spx` support, preload caching, movie playback, lossless import naming cleanup, and runtime loading performance improvements.
+
+### Added
+
+- Runtime loading for `.spx` Gaussian splat files.
+- Browser-controlled preload caching with a RAM-budget limit.
+- Folder-based movie mode with progressive loading and adjustable playback FPS.
+- Windows file association helpers included directly in the release package.
+
+### Changed
+
+- The editor import preset previously called `VeryHigh` is now `Lossless`.
+- Release file association helpers now register `.spx` in addition to `.ply`, `.spz`, and `.sog`.
+- The release package now ships as `releases/Splatviewer_VR_v1.4_Windows_x64.zip`.
+
+### Fixed
+
+- Movie mode now loads files from the folder currently shown in the VR browser.
+- Runtime movie loading no longer competes with preload caching for I/O.
+- Runtime packing and PLY parsing allocate substantially less temporary memory during loading.
+
 ## Version 1.2
 
 Adds runtime PlayCanvas `.sog` loading support, desktop browser access from `Esc`, and follow-up fixes for camera reset and SOG decoding.

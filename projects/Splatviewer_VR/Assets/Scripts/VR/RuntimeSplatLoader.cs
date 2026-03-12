@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
+using System.Threading.Tasks;
 using GaussianSplatting.Runtime;
 using Unity.Mathematics;
 using UnityEngine;
@@ -19,6 +20,36 @@ public class RuntimeSplatLoader : MonoBehaviour
     public GaussianSplatRenderer targetRenderer;
 
     GaussianSplatAsset _currentAsset;
+    string _currentFilePath;
+    readonly object _preloadLock = new object();
+    readonly Dictionary<string, GaussianSplatAsset> _preloadedAssets = new Dictionary<string, GaussianSplatAsset>(StringComparer.OrdinalIgnoreCase);
+    readonly HashSet<string> _desiredPreloadPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    readonly List<string> _preloadQueue = new List<string>();
+    Task<PreparedRuntimeAsset> _activePreloadTask;
+    string _activePreloadPath;
+    long _preloadCachedBytes;
+    long _preloadBudgetBytes;
+
+    /// <summary>Total bytes currently used by preloaded assets in RAM.</summary>
+    public long PreloadCachedBytes { get { lock (_preloadLock) return _preloadCachedBytes; } }
+
+    /// <summary>Maximum bytes allowed for the preload cache (0 = unlimited).</summary>
+    public long PreloadBudgetBytes { get { lock (_preloadLock) return _preloadBudgetBytes; } }
+
+    sealed class PreparedRuntimeAsset
+    {
+        public string filePath;
+        public string assetName;
+        public int splatCount;
+        public float3 boundsMin;
+        public float3 boundsMax;
+        public byte[] posData;
+        public byte[] otherData;
+        public byte[] colorData;
+        public byte[] shData;
+
+        public long TotalBytes => (long)(posData?.Length ?? 0) + (otherData?.Length ?? 0) + (colorData?.Length ?? 0) + (shData?.Length ?? 0);
+    }
 
     void Awake()
     {
@@ -26,10 +57,247 @@ public class RuntimeSplatLoader : MonoBehaviour
             targetRenderer = GetComponent<GaussianSplatRenderer>();
     }
 
+    /// <summary>
+    /// Set the RAM budget for preloading, as a fraction of total system RAM.
+    /// E.g. 0.3 means 30% of system RAM. Pass 0 to disable budget limit.
+    /// </summary>
+    public void SetPreloadBudgetFraction(float fraction)
+    {
+        long totalRam = (long)SystemInfo.systemMemorySize * 1024L * 1024L; // MB → bytes
+        lock (_preloadLock)
+        {
+            _preloadBudgetBytes = fraction > 0f ? (long)(totalRam * Mathf.Clamp01(fraction)) : 0;
+        }
+        Debug.Log($"[RuntimeSplatLoader] Preload budget set to {_preloadBudgetBytes / (1024 * 1024)}MB ({fraction:P0} of {SystemInfo.systemMemorySize}MB RAM)");
+    }
+
+    /// <summary>
+    /// Estimate the in-memory size (bytes) of a splat file once decoded to Float32 quality.
+    /// Uses file size as a heuristic since the exact splat count isn't known without reading.
+    /// </summary>
+    public static long EstimateAssetBytes(string filePath)
+    {
+        try
+        {
+            var fi = new FileInfo(filePath);
+            if (!fi.Exists) return 0;
+            string ext = fi.Extension.ToLowerInvariant();
+
+            // Estimate splat count from file size:
+            // PLY: ~244 bytes/splat on disk (with SH), decompressed ~232 bytes/splat in RAM
+            // SPZ: ~22 bytes/splat compressed, ~232 bytes/splat in RAM
+            // SPX: variable block-based, typically 3-5x compression
+            // SOG: similar to SPZ
+            // RAM per splat (Float32): pos(12) + other(16) + color(16) + SH(192) = 236 bytes
+            const long ramPerSplat = 236;
+
+            long diskSize = fi.Length;
+            long estimatedSplats;
+
+            if (ext == ".ply")
+                estimatedSplats = diskSize / 244;      // rough PLY density
+            else if (ext == ".spz")
+                estimatedSplats = diskSize / 22;        // SPZ is heavily compressed
+            else if (ext == ".spx")
+                estimatedSplats = diskSize / 30;        // SPX block compression
+            else if (ext == ".sog")
+                estimatedSplats = diskSize / 25;        // SOG similar to SPZ
+            else
+                estimatedSplats = diskSize / 100;       // fallback
+
+            return Math.Max(estimatedSplats, 1) * ramPerSplat;
+        }
+        catch
+        {
+            return 100L * 1024 * 1024; // fallback: assume 100MB
+        }
+    }
+
     public static bool IsSupportedFileExtension(string filePath)
     {
         string ext = Path.GetExtension(filePath).ToLowerInvariant();
         return ext == ".ply" || ext == ".spz" || ext == ".sog" || ext == ".spx";
+    }
+
+    public void SetPreloadTargets(IEnumerable<string> filePaths)
+    {
+        var desired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (filePaths != null)
+        {
+            foreach (string filePath in filePaths)
+            {
+                if (!string.IsNullOrWhiteSpace(filePath))
+                    desired.Add(filePath);
+            }
+        }
+
+        List<GaussianSplatAsset> staleAssets = null;
+        List<string> staleAssetPaths = null;
+
+        lock (_preloadLock)
+        {
+            _desiredPreloadPaths.Clear();
+            foreach (string filePath in desired)
+                _desiredPreloadPaths.Add(filePath);
+
+            foreach (var kvp in _preloadedAssets)
+            {
+                if (_desiredPreloadPaths.Contains(kvp.Key) || PathsEqual(kvp.Key, _currentFilePath))
+                    continue;
+
+                staleAssets ??= new List<GaussianSplatAsset>();
+                staleAssetPaths ??= new List<string>();
+                staleAssets.Add(kvp.Value);
+                staleAssetPaths.Add(kvp.Key);
+            }
+            if (staleAssetPaths != null)
+            {
+                foreach (string filePath in staleAssetPaths)
+                {
+                    _preloadedAssets.Remove(filePath);
+                    _preloadCachedBytes -= EstimateAssetBytes(filePath);
+                }
+                if (_preloadCachedBytes < 0) _preloadCachedBytes = 0;
+            }
+
+            // Remove queued entries that are no longer desired
+            _preloadQueue.RemoveAll(p => !_desiredPreloadPaths.Contains(p));
+        }
+
+        if (staleAssets != null)
+        {
+            foreach (var asset in staleAssets)
+            {
+                if (asset != null)
+                    Destroy(asset);
+            }
+        }
+    }
+
+    public void BeginPreload(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath) || !IsSupportedFileExtension(filePath))
+            return;
+
+        lock (_preloadLock)
+        {
+            if (_preloadedAssets.ContainsKey(filePath) || PathsEqual(filePath, _currentFilePath))
+                return;
+            if (PathsEqual(filePath, _activePreloadPath))
+                return;
+            if (_preloadQueue.FindIndex(p => PathsEqual(p, filePath)) >= 0)
+                return;
+
+            _preloadQueue.Add(filePath);
+        }
+    }
+
+    void StartNextPreload()
+    {
+        lock (_preloadLock)
+        {
+            if (_activePreloadTask != null)
+                return;
+
+            while (_preloadQueue.Count > 0)
+            {
+                string next = _preloadQueue[0];
+                _preloadQueue.RemoveAt(0);
+
+                // Skip if already cached, already current, or no longer desired
+                if (_preloadedAssets.ContainsKey(next) || PathsEqual(next, _currentFilePath) || !_desiredPreloadPaths.Contains(next))
+                    continue;
+
+                // Check RAM budget before starting
+                if (_preloadBudgetBytes > 0)
+                {
+                    long estimatedCost = EstimateAssetBytes(next);
+                    if (_preloadCachedBytes + estimatedCost > _preloadBudgetBytes)
+                    {
+                        Debug.Log($"[RuntimeSplatLoader] Preload SKIPPED \"{Path.GetFileName(next)}\" — budget full ({_preloadCachedBytes / (1024 * 1024)}MB / {_preloadBudgetBytes / (1024 * 1024)}MB)");
+                        continue;
+                    }
+                }
+
+                _activePreloadPath = next;
+                string fileName = Path.GetFileName(next);
+                Debug.Log($"[RuntimeSplatLoader] Preload STARTED for \"{fileName}\"");
+                _activePreloadTask = Task.Run(() =>
+                {
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    var result = BuildPreparedRuntimeAsset(next);
+                    Debug.Log($"[RuntimeSplatLoader] Preload background work DONE for \"{fileName}\" in {sw.ElapsedMilliseconds}ms");
+                    return result;
+                });
+                return;
+            }
+        }
+    }
+
+    public void PumpCompletedPreloads(int maxToFinalize = 1)
+    {
+        // Check if the active background task has finished
+        Task<PreparedRuntimeAsset> finishedTask = null;
+        string finishedPath = null;
+
+        lock (_preloadLock)
+        {
+            if (_activePreloadTask != null && _activePreloadTask.IsCompleted)
+            {
+                finishedTask = _activePreloadTask;
+                finishedPath = _activePreloadPath;
+                _activePreloadTask = null;
+                _activePreloadPath = null;
+            }
+        }
+
+        if (finishedTask != null)
+        {
+            PreparedRuntimeAsset prepared = null;
+            Exception error = null;
+            try
+            {
+                prepared = finishedTask.GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                error = ex;
+            }
+
+            bool shouldKeep;
+            lock (_preloadLock)
+            {
+                shouldKeep = _desiredPreloadPaths.Contains(finishedPath);
+            }
+
+            if (error != null)
+            {
+                Debug.LogWarning($"[RuntimeSplatLoader] Preload failed for {finishedPath}: {error.Message}");
+            }
+            else if (shouldKeep && prepared != null)
+            {
+                var asset = CreateRuntimeAsset(prepared);
+                long assetBytes = prepared.TotalBytes;
+                bool keepAsset = false;
+                lock (_preloadLock)
+                {
+                    if (_desiredPreloadPaths.Contains(finishedPath) && !_preloadedAssets.ContainsKey(finishedPath))
+                    {
+                        _preloadedAssets.Add(finishedPath, asset);
+                        _preloadCachedBytes += assetBytes;
+                        keepAsset = true;
+                    }
+                }
+
+                if (keepAsset)
+                    Debug.Log($"[RuntimeSplatLoader] Preload FINALIZED \"{Path.GetFileName(finishedPath)}\" into cache");
+                else
+                    Destroy(asset);
+            }
+        }
+
+        // Start next queued preload if nothing is in flight
+        StartNextPreload();
     }
 
     /// <summary>Load a .ply, .spz, or bundled .sog file from disk and display it.</summary>
@@ -50,60 +318,12 @@ public class RuntimeSplatLoader : MonoBehaviour
         try
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            string ext = Path.GetExtension(filePath).ToLowerInvariant();
-            var splats = ext == ".spz"
-                ? ReadSpz(filePath)
-                : ext == ".sog"
-                    ? PlayCanvasSogReader.ReadFile(filePath)
-                    : ext == ".spx"
-                        ? SpxReader.ReadFile(filePath)
-                        : ReadPly(filePath);
-            if (splats == null || splats.Length == 0)
+            var asset = GetOrCreateAsset(filePath);
+            if (asset == null)
                 return false;
 
-            Debug.Log($"[RuntimeSplatLoader] Read {splats.Length:N0} splats in {sw.ElapsedMilliseconds}ms");
-
-            // Compute bounds
-            float3 bMin = float.PositiveInfinity;
-            float3 bMax = float.NegativeInfinity;
-            for (int i = 0; i < splats.Length; i++)
-            {
-                bMin = math.min(bMin, splats[i].pos);
-                bMax = math.max(bMax, splats[i].pos);
-            }
-
-            // Morton reorder for better GPU cache coherence
-            MortonReorder(splats, bMin, bMax);
-
-            // Pack data into binary buffers
-            byte[] posData = PackPositions(splats);
-            byte[] otherData = PackOther(splats);
-            byte[] colorData = PackColor(splats);
-            byte[] shData = PackSH(splats);
-
-            // Create asset
-            if (_currentAsset != null)
-                Destroy(_currentAsset);
-
-            _currentAsset = ScriptableObject.CreateInstance<GaussianSplatAsset>();
-            _currentAsset.Initialize(
-                splats.Length,
-                GaussianSplatAsset.VectorFormat.Float32,
-                GaussianSplatAsset.VectorFormat.Float32,
-                GaussianSplatAsset.ColorFormat.Float32x4,
-                GaussianSplatAsset.SHFormat.Float32,
-                (Vector3)bMin, (Vector3)bMax, null
-            );
-            _currentAsset.name = Path.GetFileNameWithoutExtension(filePath);
-            _currentAsset.runtimePosData = posData;
-            _currentAsset.runtimeOtherData = otherData;
-            _currentAsset.runtimeColorData = colorData;
-            _currentAsset.runtimeSHData = shData;
-            _currentAsset.SetDataHash(new Hash128((uint)splats.Length, (uint)GaussianSplatAsset.kCurrentVersion, 0, (uint)filePath.GetHashCode()));
-
-            // Assign to renderer — Update() auto-detects the change
-            targetRenderer.m_Asset = _currentAsset;
-            Debug.Log($"[RuntimeSplatLoader] Loaded \"{_currentAsset.name}\" ({splats.Length:N0} splats) in {sw.ElapsedMilliseconds}ms");
+            AssignCurrentAsset(filePath, asset);
+            Debug.Log($"[RuntimeSplatLoader] Loaded \"{asset.name}\" ({asset.splatCount:N0} splats) in {sw.ElapsedMilliseconds}ms");
             return true;
         }
         catch (Exception ex)
@@ -114,10 +334,391 @@ public class RuntimeSplatLoader : MonoBehaviour
     }
 
 
+    // ── Movie Mode ──────────────────────────────────────────────────────────
+
+    GaussianSplatAsset[] _movieFrames;
+
+    /// <summary>True while movie frames are loaded and ready.</summary>
+    public bool IsMovieReady => _movieFrames != null && _movieFrames.Length > 0;
+
+    /// <summary>Number of loaded movie frames.</summary>
+    public int MovieFrameCount => _movieFrames?.Length ?? 0;
+
+    /// <summary>
+    /// Estimate total RAM needed to load all files. Returns bytes.
+    /// </summary>
+    public static long EstimateTotalBytes(IReadOnlyList<string> files)
+    {
+        long total = 0;
+        for (int i = 0; i < files.Count; i++)
+            total += EstimateAssetBytes(files[i]);
+        return total;
+    }
+
+    /// <summary>
+    /// Check whether there is enough free system RAM (estimated) to load all files.
+    /// Returns (fitsInRam, estimatedBytes, availableBytes).
+    /// </summary>
+    public static (bool fits, long estimatedBytes, long availableBytes) CheckMovieRamFit(IReadOnlyList<string> files)
+    {
+        long estimated = EstimateTotalBytes(files);
+        // Use 80% of total system RAM as the ceiling
+        long available = (long)SystemInfo.systemMemorySize * 1024L * 1024L * 80L / 100L;
+        return (estimated <= available, estimated, available);
+    }
+
+    /// <summary>
+    /// Progressively load all files into movie frames on a background thread.
+    /// Call PumpMovieLoad() each frame to finalize completed frames.
+    /// The onProgress callback receives (loadedCount, totalCount).
+    /// Returns false if loading cannot start.
+    /// </summary>
+    public bool BeginMovieLoad(IReadOnlyList<string> files, Action<int, int> onProgress)
+    {
+        StopMovie();
+
+        _movieLoadFiles = new List<string>(files);
+        _movieLoadTotal = files.Count;
+        _movieLoadDone = 0;
+        _movieLaunchNext = 0;
+        _movieLoadFailed = false;
+        _movieLoadProgress = onProgress;
+        _movieLoadResults = new GaussianSplatAsset[files.Count];
+        _movieLoadTasks = new Task<PreparedRuntimeAsset>[files.Count];
+        _movieLoadStopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        // Sliding window: limit concurrent decodes to avoid CPU/memory thrashing.
+        // Each decode (especially SOG/WebP) is very CPU + memory heavy,
+        // so more than ~8 simultaneous decodes causes severe cache thrashing.
+        _movieMaxConcurrency = Math.Min(16, Math.Max(1, Environment.ProcessorCount));
+        int initialBatch = Math.Min(_movieMaxConcurrency, files.Count);
+        for (int i = 0; i < initialBatch; i++)
+            LaunchMovieTask(i);
+        _movieLaunchNext = initialBatch;
+
+        Debug.Log($"[RuntimeSplatLoader] Movie decode started: {files.Count} frames, {_movieMaxConcurrency} parallel workers");
+        return true;
+    }
+
+    void LaunchMovieTask(int index)
+    {
+        string filePath = _movieLoadFiles[index];
+        string fileName = Path.GetFileName(filePath);
+        _movieLoadTasks[index] = Task.Run(() =>
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var result = BuildPreparedRuntimeAsset(filePath);
+            Debug.Log($"[RuntimeSplatLoader] Movie frame \"{fileName}\" decoded in {sw.ElapsedMilliseconds}ms");
+            return result;
+        });
+    }
+
+    /// <summary>
+    /// Pump movie loading each frame. Returns true when all frames are loaded.
+    /// </summary>
+    public bool PumpMovieLoad()
+    {
+        if (_movieLoadFiles == null)
+            return true; // nothing to do
+
+        // Finalize as many completed frames as possible (in order)
+        while (_movieLoadDone < _movieLoadTotal)
+        {
+            var task = _movieLoadTasks[_movieLoadDone];
+            if (!task.IsCompleted) break;
+
+            PreparedRuntimeAsset prepared = null;
+            try
+            {
+                prepared = task.GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[RuntimeSplatLoader] Movie load failed for frame {_movieLoadDone}: {ex.Message}");
+                _movieLoadFailed = true;
+            }
+
+            if (prepared != null && !_movieLoadFailed)
+            {
+                _movieLoadResults[_movieLoadDone] = CreateRuntimeAsset(prepared);
+            }
+
+            _movieLoadDone++;
+            _movieLoadProgress?.Invoke(_movieLoadDone, _movieLoadTotal);
+
+            // Sliding window: launch next task to keep workers busy
+            if (!_movieLoadFailed && _movieLaunchNext < _movieLoadTotal)
+            {
+                LaunchMovieTask(_movieLaunchNext);
+                _movieLaunchNext++;
+            }
+
+            if (_movieLoadFailed) break;
+        }
+
+        if (_movieLoadFailed || _movieLoadDone >= _movieLoadTotal)
+        {
+            // Finished (or failed)
+            if (!_movieLoadFailed)
+            {
+                _movieFrames = _movieLoadResults;
+                _movieLoadStopwatch?.Stop();
+                long elapsedMs = _movieLoadStopwatch?.ElapsedMilliseconds ?? 0;
+                float elapsedSec = elapsedMs / 1000f;
+                float avgMs = _movieFrames.Length > 0 ? (float)elapsedMs / _movieFrames.Length : 0;
+                Debug.Log($"[RuntimeSplatLoader] Movie loaded: {_movieFrames.Length} frames in {elapsedSec:F1}s ({avgMs:F0}ms/frame avg, {_movieMaxConcurrency} workers)");
+            }
+            else
+            {
+                // Clean up partial results
+                for (int i = 0; i < _movieLoadResults.Length; i++)
+                {
+                    if (_movieLoadResults[i] != null)
+                        Destroy(_movieLoadResults[i]);
+                }
+                _movieLoadResults = null;
+            }
+
+            _movieLoadFiles = null;
+            _movieLoadTasks = null;
+            _movieLoadProgress = null;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Show a specific movie frame by index (instant swap, no loading).</summary>
+    public void ShowMovieFrame(int frameIndex)
+    {
+        if (_movieFrames == null || frameIndex < 0 || frameIndex >= _movieFrames.Length)
+            return;
+
+        var asset = _movieFrames[frameIndex];
+        if (asset == null) return;
+
+        _currentAsset = asset;
+        _currentFilePath = null;
+        targetRenderer.m_Asset = asset;
+    }
+
+    /// <summary>Release all movie frames from RAM.</summary>
+    public void StopMovie()
+    {
+        if (_movieFrames != null)
+        {
+            for (int i = 0; i < _movieFrames.Length; i++)
+            {
+                if (_movieFrames[i] != null && !ReferenceEquals(_movieFrames[i], _currentAsset))
+                    Destroy(_movieFrames[i]);
+            }
+            _movieFrames = null;
+            Debug.Log("[RuntimeSplatLoader] Movie frames released");
+        }
+
+        // Cancel any in-progress movie load
+        _movieLoadFiles = null;
+        _movieLoadTasks = null;
+        _movieLoadResults = null;
+        _movieLoadProgress = null;
+    }
+
+    // Movie loading state
+    List<string> _movieLoadFiles;
+    GaussianSplatAsset[] _movieLoadResults;
+    Task<PreparedRuntimeAsset>[] _movieLoadTasks;
+    Action<int, int> _movieLoadProgress;
+    int _movieLoadTotal;
+    int _movieLoadDone;
+    int _movieLaunchNext;
+    int _movieMaxConcurrency;
+    bool _movieLoadFailed;
+    System.Diagnostics.Stopwatch _movieLoadStopwatch;
+
+    // ── End Movie Mode ────────────────────────────────────────────────────────
+
+
     void OnDestroy()
     {
-        if (_currentAsset != null)
+        StopMovie();
+
+        var toDestroy = new List<GaussianSplatAsset>();
+        lock (_preloadLock)
+        {
+            foreach (var asset in _preloadedAssets.Values)
+            {
+                if (asset != null && !toDestroy.Contains(asset))
+                    toDestroy.Add(asset);
+            }
+            _preloadedAssets.Clear();
+            _preloadQueue.Clear();
+            _desiredPreloadPaths.Clear();
+            _activePreloadTask = null;
+            _activePreloadPath = null;
+            _preloadCachedBytes = 0;
+        }
+
+        if (_currentAsset != null && !toDestroy.Contains(_currentAsset))
+            toDestroy.Add(_currentAsset);
+
+        foreach (var asset in toDestroy)
+        {
+            if (asset != null)
+                Destroy(asset);
+        }
+    }
+
+    GaussianSplatAsset GetOrCreateAsset(string filePath)
+    {
+        string fileName = Path.GetFileName(filePath);
+        GaussianSplatAsset cachedAsset;
+        lock (_preloadLock)
+        {
+            if (_preloadedAssets.TryGetValue(filePath, out cachedAsset))
+            {
+                Debug.Log($"[RuntimeSplatLoader] CACHE HIT for \"{fileName}\" — returning preloaded asset");
+                return cachedAsset;
+            }
+        }
+
+        // Check if this file is the one currently being preloaded
+        Task<PreparedRuntimeAsset> activeTask = null;
+        lock (_preloadLock)
+        {
+            if (PathsEqual(filePath, _activePreloadPath) && _activePreloadTask != null)
+            {
+                activeTask = _activePreloadTask;
+                _activePreloadTask = null;
+                _activePreloadPath = null;
+            }
+        }
+
+        PreparedRuntimeAsset prepared;
+        if (activeTask != null)
+        {
+            bool alreadyDone = activeTask.IsCompleted;
+            Debug.Log($"[RuntimeSplatLoader] TASK WAIT for \"{fileName}\" (already completed: {alreadyDone})");
+            prepared = activeTask.GetAwaiter().GetResult();
+        }
+        else
+        {
+            Debug.Log($"[RuntimeSplatLoader] SYNC BUILD for \"{fileName}\" — no preload available");
+            prepared = BuildPreparedRuntimeAsset(filePath);
+        }
+
+        if (prepared == null)
+            return null;
+
+        var asset = CreateRuntimeAsset(prepared);
+        bool cacheAsset;
+        GaussianSplatAsset duplicateAsset = null;
+        lock (_preloadLock)
+        {
+            cacheAsset = _desiredPreloadPaths.Contains(filePath);
+            if (cacheAsset && !_preloadedAssets.ContainsKey(filePath))
+                _preloadedAssets.Add(filePath, asset);
+            else if (_preloadedAssets.TryGetValue(filePath, out cachedAsset))
+            {
+                cacheAsset = false;
+                duplicateAsset = asset;
+                asset = cachedAsset;
+            }
+        }
+
+        if (duplicateAsset != null)
+            Destroy(duplicateAsset);
+
+        return asset;
+    }
+
+    static PreparedRuntimeAsset BuildPreparedRuntimeAsset(string filePath)
+    {
+        var swStep = System.Diagnostics.Stopwatch.StartNew();
+
+        var splats = ReadInputSplats(filePath);
+        if (splats == null || splats.Length == 0)
+            return null;
+        long msRead = swStep.ElapsedMilliseconds;
+
+        swStep.Restart();
+        MortonReorder(splats, out float3 bMin, out float3 bMax);
+        long msMorton = swStep.ElapsedMilliseconds;
+
+        swStep.Restart();
+        var result = new PreparedRuntimeAsset
+        {
+            filePath = filePath,
+            assetName = Path.GetFileNameWithoutExtension(filePath),
+            splatCount = splats.Length,
+            boundsMin = bMin,
+            boundsMax = bMax,
+            posData = PackPositions(splats),
+            otherData = PackOther(splats),
+            colorData = PackColor(splats),
+            shData = PackSH(splats)
+        };
+        long msPack = swStep.ElapsedMilliseconds;
+
+        Debug.Log($"[RuntimeSplatLoader] \"{Path.GetFileName(filePath)}\" breakdown: read={msRead}ms morton={msMorton}ms pack={msPack}ms ({splats.Length:N0} splats)");
+        return result;
+    }
+
+    static SplatData[] ReadInputSplats(string filePath)
+    {
+        string ext = Path.GetExtension(filePath).ToLowerInvariant();
+        return ext == ".spz"
+            ? ReadSpz(filePath)
+            : ext == ".sog"
+                ? PlayCanvasSogReader.ReadFile(filePath)
+                : ext == ".spx"
+                    ? SpxReader.ReadFile(filePath)
+                    : ReadPly(filePath);
+    }
+
+    static GaussianSplatAsset CreateRuntimeAsset(PreparedRuntimeAsset prepared)
+    {
+        var asset = ScriptableObject.CreateInstance<GaussianSplatAsset>();
+        asset.Initialize(
+            prepared.splatCount,
+            GaussianSplatAsset.VectorFormat.Float32,
+            GaussianSplatAsset.VectorFormat.Float32,
+            GaussianSplatAsset.ColorFormat.Float32x4,
+            GaussianSplatAsset.SHFormat.Float32,
+            (Vector3)prepared.boundsMin, (Vector3)prepared.boundsMax, null
+        );
+        asset.name = prepared.assetName;
+        asset.runtimePosData = prepared.posData;
+        asset.runtimeOtherData = prepared.otherData;
+        asset.runtimeColorData = prepared.colorData;
+        asset.runtimeSHData = prepared.shData;
+        asset.SetDataHash(new Hash128((uint)prepared.splatCount, (uint)GaussianSplatAsset.kCurrentVersion, 0, (uint)prepared.filePath.GetHashCode()));
+        return asset;
+    }
+
+    void AssignCurrentAsset(string filePath, GaussianSplatAsset asset)
+    {
+        if (_currentAsset != null && !ReferenceEquals(_currentAsset, asset) && !IsCachedAsset(_currentFilePath, _currentAsset))
             Destroy(_currentAsset);
+
+        _currentAsset = asset;
+        _currentFilePath = filePath;
+        targetRenderer.m_Asset = _currentAsset;
+    }
+
+    bool IsCachedAsset(string filePath, GaussianSplatAsset asset)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || asset == null)
+            return false;
+
+        lock (_preloadLock)
+        {
+            return _preloadedAssets.TryGetValue(filePath, out var cachedAsset) && ReferenceEquals(cachedAsset, asset);
+        }
+    }
+
+    static bool PathsEqual(string lhs, string rhs)
+    {
+        return string.Equals(lhs, rhs, StringComparison.OrdinalIgnoreCase);
     }
 
     // ── PLY Reader ────────────────────────────────────────────────────────────
@@ -216,66 +817,88 @@ public class RuntimeSplatLoader : MonoBehaviour
                     shCount = i + 1;
         }
 
-        // Read binary data
+        // Pre-resolve property indices (avoids per-vertex dictionary lookups + string allocations)
+        int iX = propIdx.TryGetValue("x", out int _pi) ? _pi : -1;
+        int iY = propIdx.TryGetValue("y", out _pi) ? _pi : -1;
+        int iZ = propIdx.TryGetValue("z", out _pi) ? _pi : -1;
+        int iDc0 = propIdx.TryGetValue("f_dc_0", out _pi) ? _pi : -1;
+        int iDc1 = propIdx.TryGetValue("f_dc_1", out _pi) ? _pi : -1;
+        int iDc2 = propIdx.TryGetValue("f_dc_2", out _pi) ? _pi : -1;
+        int iOpacity = propIdx.TryGetValue("opacity", out _pi) ? _pi : -1;
+        int iScale0 = propIdx.TryGetValue("scale_0", out _pi) ? _pi : -1;
+        int iScale1 = propIdx.TryGetValue("scale_1", out _pi) ? _pi : -1;
+        int iScale2 = propIdx.TryGetValue("scale_2", out _pi) ? _pi : -1;
+        int iRot0 = propIdx.TryGetValue("rot_0", out _pi) ? _pi : -1;
+        int iRot1 = propIdx.TryGetValue("rot_1", out _pi) ? _pi : -1;
+        int iRot2 = propIdx.TryGetValue("rot_2", out _pi) ? _pi : -1;
+        int iRot3 = propIdx.TryGetValue("rot_3", out _pi) ? _pi : -1;
+
+        int[] shIdx = null;
+        if (shCount > 0)
+        {
+            shIdx = new int[45];
+            for (int j = 0; j < 45; j++)
+                shIdx[j] = propIdx.TryGetValue($"f_rest_{j}", out _pi) ? _pi : -1;
+        }
+
+        // Read all binary vertex data in one bulk read (avoids ~N individual Read calls)
+        int vertexBytes = stride * 4;
+        byte[] allVertexData = new byte[(long)vertexCount * vertexBytes];
+        int totalBytesRead = 0;
+        while (totalBytesRead < allVertexData.Length)
+        {
+            int r = fs.Read(allVertexData, totalBytesRead, allVertexData.Length - totalBytesRead);
+            if (r == 0) throw new Exception($"PLY truncated: read {totalBytesRead} of {allVertexData.Length} bytes");
+            totalBytesRead += r;
+        }
+
         var splats = new SplatData[vertexCount];
         var floatBuf = new float[stride];
-        var byteBuf = new byte[stride * 4];
 
         for (int v = 0; v < vertexCount; v++)
         {
-            int bytesRead = fs.Read(byteBuf, 0, byteBuf.Length);
-            if (bytesRead < byteBuf.Length)
-                throw new Exception($"PLY truncated at vertex {v}");
-            Buffer.BlockCopy(byteBuf, 0, floatBuf, 0, byteBuf.Length);
+            Buffer.BlockCopy(allVertexData, v * vertexBytes, floatBuf, 0, vertexBytes);
 
             ref SplatData s = ref splats[v];
 
             s.pos = new float3(
-                propIdx.ContainsKey("x") ? floatBuf[propIdx["x"]] : 0,
-                propIdx.ContainsKey("y") ? floatBuf[propIdx["y"]] : 0,
-                propIdx.ContainsKey("z") ? floatBuf[propIdx["z"]] : 0
+                iX >= 0 ? floatBuf[iX] : 0f,
+                iY >= 0 ? floatBuf[iY] : 0f,
+                iZ >= 0 ? floatBuf[iZ] : 0f
             );
 
-            // Read raw SH DC0 and apply SH0ToColor (linearize for texture)
             float3 rawDc0 = new float3(
-                propIdx.ContainsKey("f_dc_0") ? floatBuf[propIdx["f_dc_0"]] : 0,
-                propIdx.ContainsKey("f_dc_1") ? floatBuf[propIdx["f_dc_1"]] : 0,
-                propIdx.ContainsKey("f_dc_2") ? floatBuf[propIdx["f_dc_2"]] : 0
+                iDc0 >= 0 ? floatBuf[iDc0] : 0f,
+                iDc1 >= 0 ? floatBuf[iDc1] : 0f,
+                iDc2 >= 0 ? floatBuf[iDc2] : 0f
             );
             s.dc0 = GaussianUtils.SH0ToColor(rawDc0);
 
-            // Read raw logit opacity and apply Sigmoid
-            float rawOpacity = propIdx.ContainsKey("opacity") ? floatBuf[propIdx["opacity"]] : 0;
-            s.opacity = GaussianUtils.Sigmoid(rawOpacity);
+            s.opacity = GaussianUtils.Sigmoid(iOpacity >= 0 ? floatBuf[iOpacity] : 0f);
 
-            // Read raw log-scale and linearize (same as GaussianUtils.LinearScale)
             s.scale = GaussianUtils.LinearScale(new float3(
-                propIdx.ContainsKey("scale_0") ? floatBuf[propIdx["scale_0"]] : 0,
-                propIdx.ContainsKey("scale_1") ? floatBuf[propIdx["scale_1"]] : 0,
-                propIdx.ContainsKey("scale_2") ? floatBuf[propIdx["scale_2"]] : 0
+                iScale0 >= 0 ? floatBuf[iScale0] : 0f,
+                iScale1 >= 0 ? floatBuf[iScale1] : 0f,
+                iScale2 >= 0 ? floatBuf[iScale2] : 0f
             ));
 
-            // PLY stores as (w,x,y,z) in rot_0..rot_3
             float4 q = new float4(
-                propIdx.ContainsKey("rot_0") ? floatBuf[propIdx["rot_0"]] : 1,
-                propIdx.ContainsKey("rot_1") ? floatBuf[propIdx["rot_1"]] : 0,
-                propIdx.ContainsKey("rot_2") ? floatBuf[propIdx["rot_2"]] : 0,
-                propIdx.ContainsKey("rot_3") ? floatBuf[propIdx["rot_3"]] : 0
+                iRot0 >= 0 ? floatBuf[iRot0] : 1f,
+                iRot1 >= 0 ? floatBuf[iRot1] : 0f,
+                iRot2 >= 0 ? floatBuf[iRot2] : 0f,
+                iRot3 >= 0 ? floatBuf[iRot3] : 0f
             );
-            // Normalize and swizzle from (w,x,y,z) → (x,y,z,w), then pack smallest-3
             q = GaussianUtils.NormalizeSwizzleRotation(q);
             s.rot = GaussianUtils.PackSmallest3Rotation(q);
 
-            // SH in PLY: f_rest_0..14 = R, f_rest_15..29 = G, f_rest_30..44 = B
-            // We need interleaved: sh[j] = (R[j], G[j], B[j])
-            if (shCount > 0)
+            if (shIdx != null)
             {
                 s.sh = new float3[15];
                 for (int j = 0; j < 15; j++)
                 {
-                    float sr = (j < shCount && propIdx.ContainsKey($"f_rest_{j}")) ? floatBuf[propIdx[$"f_rest_{j}"]] : 0;
-                    float sg = (j + 15 < shCount && propIdx.ContainsKey($"f_rest_{j + 15}")) ? floatBuf[propIdx[$"f_rest_{j + 15}"]] : 0;
-                    float sb = (j + 30 < shCount && propIdx.ContainsKey($"f_rest_{j + 30}")) ? floatBuf[propIdx[$"f_rest_{j + 30}"]] : 0;
+                    float sr = (j < shCount && shIdx[j] >= 0) ? floatBuf[shIdx[j]] : 0f;
+                    float sg = (j + 15 < shCount && shIdx[j + 15] >= 0) ? floatBuf[shIdx[j + 15]] : 0f;
+                    float sb = (j + 30 < shCount && shIdx[j + 30] >= 0) ? floatBuf[shIdx[j + 30]] : 0f;
                     s.sh[j] = new float3(sr, sg, sb);
                 }
             }
@@ -402,82 +1025,92 @@ public class RuntimeSplatLoader : MonoBehaviour
 
     // ── Morton Reorder ────────────────────────────────────────────────────────
 
-    static void MortonReorder(SplatData[] splats, float3 bMin, float3 bMax)
+    static void MortonReorder(SplatData[] splats, out float3 bMin, out float3 bMax)
     {
-        float3 inv = 1f / math.max(bMax - bMin, 1e-10f);
-        float kScaler = (1 << 21) - 1;
-
+        // Compute bounds while building Morton keys (folds two O(N) passes into one)
+        bMin = float.PositiveInfinity;
+        bMax = float.NegativeInfinity;
         var keys = new ulong[splats.Length];
         var indices = new int[splats.Length];
+        for (int i = 0; i < splats.Length; i++)
+        {
+            float3 p = splats[i].pos;
+            bMin = math.min(bMin, p);
+            bMax = math.max(bMax, p);
+            indices[i] = i;
+        }
+
+        float3 inv = 1f / math.max(bMax - bMin, 1e-10f);
+        float kScaler = (1 << 21) - 1;
         for (int i = 0; i < splats.Length; i++)
         {
             float3 norm = (splats[i].pos - bMin) * inv * kScaler;
             uint3 ipos = (uint3)math.clamp(norm, 0, kScaler);
             keys[i] = GaussianUtils.MortonEncode3(ipos);
-            indices[i] = i;
         }
 
         Array.Sort(keys, indices);
 
-        var copy = new SplatData[splats.Length];
-        Array.Copy(splats, copy, splats.Length);
+        // In-place cycle permutation — avoids allocating a full SplatData[N] copy
         for (int i = 0; i < splats.Length; i++)
-            splats[i] = copy[indices[i]];
+        {
+            while (indices[i] != i)
+            {
+                int target = indices[i];
+                (splats[i], splats[target]) = (splats[target], splats[i]);
+                (indices[i], indices[target]) = (indices[target], target);
+            }
+        }
     }
 
     // ── Data Packing (Float32 / VeryHigh quality) ─────────────────────────────
+    // Uses Buffer.BlockCopy for bulk float→byte conversion to avoid
+    // per-field BitConverter.GetBytes allocations (was ~13M allocs per file).
 
-    static void WriteFloat(byte[] dst, int offset, float v)
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit)]
+    struct FloatUintUnion
     {
-        var b = BitConverter.GetBytes(v);
-        dst[offset]     = b[0];
-        dst[offset + 1] = b[1];
-        dst[offset + 2] = b[2];
-        dst[offset + 3] = b[3];
-    }
-
-    static void WriteUint(byte[] dst, int offset, uint v)
-    {
-        dst[offset]     = (byte)(v);
-        dst[offset + 1] = (byte)(v >> 8);
-        dst[offset + 2] = (byte)(v >> 16);
-        dst[offset + 3] = (byte)(v >> 24);
+        [System.Runtime.InteropServices.FieldOffset(0)] public float f;
+        [System.Runtime.InteropServices.FieldOffset(0)] public uint u;
     }
 
     static byte[] PackPositions(SplatData[] splats)
     {
-        var data = new byte[splats.Length * 12]; // 3 × float32
-        for (int i = 0; i < splats.Length; i++)
+        int n = splats.Length;
+        var buf = new float[n * 3];
+        for (int i = 0; i < n; i++)
         {
-            int o = i * 12;
-            WriteFloat(data, o,     splats[i].pos.x);
-            WriteFloat(data, o + 4, splats[i].pos.y);
-            WriteFloat(data, o + 8, splats[i].pos.z);
+            int o = i * 3;
+            buf[o]     = splats[i].pos.x;
+            buf[o + 1] = splats[i].pos.y;
+            buf[o + 2] = splats[i].pos.z;
         }
+        var data = new byte[n * 12];
+        Buffer.BlockCopy(buf, 0, data, 0, data.Length);
         return data;
     }
 
     static byte[] PackOther(SplatData[] splats)
     {
-        // 4 bytes packed rotation + 12 bytes Float32 scale = 16 bytes/splat
-        var data = new byte[splats.Length * 16];
-        for (int i = 0; i < splats.Length; i++)
+        int n = splats.Length;
+        // Layout per splat: uint32 rotation + float32×3 scale = 4 × uint32 = 16 bytes
+        var buf = new uint[n * 4];
+        FloatUintUnion fu;
+        fu.u = 0;
+        for (int i = 0; i < n; i++)
         {
-            int o = i * 16;
-
-            // Rotation: 10.10.10.2 packed (values already in [0,1] from PackSmallest3)
+            int o = i * 4;
             float4 r = splats[i].rot;
-            uint enc = (uint)(r.x * 1023.5f) |
-                       ((uint)(r.y * 1023.5f) << 10) |
-                       ((uint)(r.z * 1023.5f) << 20) |
-                       ((uint)(r.w * 3.5f) << 30);
-            WriteUint(data, o, enc);
-
-            // Scale: Float32
-            WriteFloat(data, o + 4,  splats[i].scale.x);
-            WriteFloat(data, o + 8,  splats[i].scale.y);
-            WriteFloat(data, o + 12, splats[i].scale.z);
+            buf[o] = (uint)(r.x * 1023.5f) |
+                     ((uint)(r.y * 1023.5f) << 10) |
+                     ((uint)(r.z * 1023.5f) << 20) |
+                     ((uint)(r.w * 3.5f) << 30);
+            fu.f = splats[i].scale.x; buf[o + 1] = fu.u;
+            fu.f = splats[i].scale.y; buf[o + 2] = fu.u;
+            fu.f = splats[i].scale.z; buf[o + 3] = fu.u;
         }
+        var data = new byte[n * 16];
+        Buffer.BlockCopy(buf, 0, data, 0, data.Length);
         return data;
     }
 
@@ -485,41 +1118,40 @@ public class RuntimeSplatLoader : MonoBehaviour
     {
         var (width, height) = GaussianSplatAsset.CalcTextureSize(splats.Length);
         int pixelCount = width * height;
-        var data = new byte[pixelCount * 16]; // Float32x4 = 16 bytes/pixel
-
+        var buf = new float[pixelCount * 4];
         for (int i = 0; i < splats.Length; i++)
         {
             int texIdx = SplatIndexToTextureIndex((uint)i);
-            int o = texIdx * 16;
-
-            // dc0 and opacity are already linearized (SH0ToColor/Sigmoid applied in reader)
-            WriteFloat(data, o,      splats[i].dc0.x);
-            WriteFloat(data, o + 4,  splats[i].dc0.y);
-            WriteFloat(data, o + 8,  splats[i].dc0.z);
-            WriteFloat(data, o + 12, splats[i].opacity);
+            int o = texIdx * 4;
+            buf[o]     = splats[i].dc0.x;
+            buf[o + 1] = splats[i].dc0.y;
+            buf[o + 2] = splats[i].dc0.z;
+            buf[o + 3] = splats[i].opacity;
         }
+        var data = new byte[pixelCount * 16];
+        Buffer.BlockCopy(buf, 0, data, 0, data.Length);
         return data;
     }
 
     static byte[] PackSH(SplatData[] splats)
     {
-        // SHTableItemFloat32: 15×float3 + float3 padding = 192 bytes
-        const int itemSize = 16 * 12; // 16 × float3 = 192 bytes
-        var data = new byte[splats.Length * itemSize];
-
+        // SHTableItemFloat32: 15×float3 + float3 padding = 48 floats = 192 bytes
+        const int floatsPerItem = 48;
+        var buf = new float[splats.Length * floatsPerItem];
         for (int i = 0; i < splats.Length; i++)
         {
             if (splats[i].sh == null) continue;
-            int baseOff = i * itemSize;
+            int baseOff = i * floatsPerItem;
             for (int band = 0; band < 15; band++)
             {
-                int o = baseOff + band * 12;
-                WriteFloat(data, o,     splats[i].sh[band].x);
-                WriteFloat(data, o + 4, splats[i].sh[band].y);
-                WriteFloat(data, o + 8, splats[i].sh[band].z);
+                int o = baseOff + band * 3;
+                buf[o]     = splats[i].sh[band].x;
+                buf[o + 1] = splats[i].sh[band].y;
+                buf[o + 2] = splats[i].sh[band].z;
             }
-            // padding float3 (3 floats) stays zero
         }
+        var data = new byte[splats.Length * floatsPerItem * 4];
+        Buffer.BlockCopy(buf, 0, data, 0, data.Length);
         return data;
     }
 

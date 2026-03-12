@@ -324,7 +324,7 @@ namespace GaussianSplatting.Editor
                 asset.shFormat > GaussianSplatAsset.SHFormat.Float16)
             {
                 EditorGUILayout.HelpBox(
-                    "It is recommended to use High or VeryHigh quality preset for editing splats, lower levels are lossy",
+                    "It is recommended to use High or Lossless quality preset for editing splats, lower levels are lossy",
                     MessageType.Warning);
             }
 

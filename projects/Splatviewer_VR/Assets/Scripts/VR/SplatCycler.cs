@@ -7,7 +7,7 @@ using UnityEngine;
 using UnityEngine.XR;
 
 /// <summary>
-/// Cycles through .ply splat files in a folder using VR controller buttons.
+/// Cycles through supported splat files in a folder using VR controller buttons.
 ///
 /// VR Controls (right controller):
 ///   B (secondaryButton) → next splat file
@@ -31,6 +31,20 @@ public class SplatCycler : MonoBehaviour
     [Tooltip("Auto-load the first file on start.")]
     public bool autoLoadFirst = true;
 
+    [Header("Preloading")]
+    [Tooltip("Preload upcoming splat files into RAM so cycling feels faster.")]
+    public bool preloadUpcomingFiles = true;
+
+    [Tooltip("Fraction of system RAM to use for preloading (e.g. 0.3 = 30%). Set to 0 to disable budget limit.")]
+    [Range(0f, 0.8f)] public float preloadRamFraction = 0.3f;
+
+    [Tooltip("How many completed preload jobs to finalize each frame.")]
+    [Min(1)] public int finalizePreloadsPerFrame = 1;
+
+    [Header("Movie Mode")]
+    [Tooltip("Playback FPS for movie mode.")]
+    [Range(1, 60)] public int movieFps = 10;
+
     [Header("Status (read-only)")]
     [SerializeField] string _currentFile = "(none)";
     [SerializeField] int _currentIndex = -1;
@@ -43,12 +57,22 @@ public class SplatCycler : MonoBehaviour
     VRFileBrowser _browser;
     VRRig _rig;
 
+    // Movie mode
+    bool _moviePlaying;
+    int _movieFrame;
+    float _movieTimer;
+
+    public bool IsMoviePlaying => _moviePlaying;
+    public bool IsMovieReady => loader != null && loader.IsMovieReady;
+
     void Start()
     {
         if (loader == null)
             loader = GetComponent<RuntimeSplatLoader>();
         _browser = FindAnyObjectByType<VRFileBrowser>();
         _rig = FindAnyObjectByType<VRRig>();
+
+        ApplyPreloadBudget();
 
         if (string.IsNullOrEmpty(splatFolder))
         {
@@ -64,6 +88,26 @@ public class SplatCycler : MonoBehaviour
 
     void Update()
     {
+        if (loader != null && preloadUpcomingFiles && !_moviePlaying)
+            loader.PumpCompletedPreloads(finalizePreloadsPerFrame);
+
+        // Movie playback
+        if (_moviePlaying && loader != null && loader.IsMovieReady)
+        {
+            _movieTimer += Time.deltaTime;
+            float interval = 1f / Mathf.Max(1, movieFps);
+            if (_movieTimer >= interval)
+            {
+                _movieTimer -= interval;
+                _movieFrame = (_movieFrame + 1) % loader.MovieFrameCount;
+                loader.ShowMovieFrame(_movieFrame);
+                _currentIndex = _movieFrame;
+                if (_movieFrame >= 0 && _movieFrame < _files.Count)
+                    _currentFile = Path.GetFileName(_files[_movieFrame]);
+            }
+            return; // skip manual input during playback
+        }
+
         if (_files.Count == 0) return;
 
         if (XRSettings.isDeviceActive)
@@ -86,6 +130,7 @@ public class SplatCycler : MonoBehaviour
         {
             _currentIndex = index;
             _currentFile = Path.GetFileName(_files[index]);
+            RefreshPreloadWindow();
         }
     }
 
@@ -139,7 +184,145 @@ public class SplatCycler : MonoBehaviour
         {
             _currentIndex = index;
             _currentFile = Path.GetFileName(path);
+            RefreshPreloadWindow();
             if (_rig != null) _rig.ResetToSpawnPoint(loader != null ? loader.targetRenderer : null);
+        }
+    }
+
+    public void ApplyPreloadBudget()
+    {
+        if (loader != null)
+            loader.SetPreloadBudgetFraction(preloadUpcomingFiles ? preloadRamFraction : 0f);
+    }
+
+    // ── Movie Mode API ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Check if all files in the current folder fit in RAM for movie mode.
+    /// Returns (fits, estimatedMB, availableMB).
+    /// </summary>
+    public (bool fits, long estimatedMB, long availableMB) CheckMovieFit()
+    {
+        if (_files.Count == 0) return (false, 0, 0);
+        var (fits, est, avail) = RuntimeSplatLoader.CheckMovieRamFit(_files);
+        return (fits, est / (1024 * 1024), avail / (1024 * 1024));
+    }
+
+    /// <summary>Start loading all frames for movie mode. Returns false if RAM check fails.</summary>
+    public bool BeginMovieLoad(Action<int, int> onProgress)
+    {
+        if (loader == null || _files.Count == 0) return false;
+
+        var (fits, est, avail) = RuntimeSplatLoader.CheckMovieRamFit(_files);
+        if (!fits)
+        {
+            Debug.LogError($"[SplatCycler] Movie mode: not enough RAM. Need ~{est / (1024 * 1024)}MB, available ~{avail / (1024 * 1024)}MB");
+            return false;
+        }
+
+        // Stop preloading to free RAM and avoid I/O contention with movie decode
+        loader.SetPreloadTargets(Array.Empty<string>());
+
+        return loader.BeginMovieLoad(_files, onProgress);
+    }
+
+    /// <summary>Pump movie loading (call each frame during load). Returns true when done.</summary>
+    public bool PumpMovieLoad()
+    {
+        return loader != null && loader.PumpMovieLoad();
+    }
+
+    /// <summary>Start movie playback (all frames must be loaded first).</summary>
+    public void StartMoviePlayback()
+    {
+        if (loader == null || !loader.IsMovieReady) return;
+        _moviePlaying = true;
+        _movieFrame = Mathf.Max(0, _currentIndex);
+        _movieTimer = 0f;
+        loader.ShowMovieFrame(_movieFrame);
+        Debug.Log($"[SplatCycler] Movie playback started at {movieFps} FPS ({loader.MovieFrameCount} frames)");
+    }
+
+    /// <summary>Stop movie playback and release frames.</summary>
+    public void StopMovie()
+    {
+        _moviePlaying = false;
+        _movieTimer = 0f;
+        if (loader != null) loader.StopMovie();
+        Debug.Log("[SplatCycler] Movie mode stopped");
+    }
+
+    public void AdjustMovieFps(int delta)
+    {
+        movieFps = Mathf.Clamp(movieFps + delta, 1, 60);
+    }
+
+    public void RefreshPreloadWindow()
+    {
+        if (loader == null)
+            return;
+
+        if (!preloadUpcomingFiles || _files.Count == 0)
+        {
+            loader.SetPreloadTargets(Array.Empty<string>());
+            return;
+        }
+
+        // Build the desired set by alternating forward/backward from current,
+        // stopping when we'd exceed the RAM budget.
+        long budget = loader.PreloadBudgetBytes;
+        long accumulated = 0;
+        var desired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Always include current
+        if (_currentIndex >= 0 && _currentIndex < _files.Count)
+            desired.Add(_files[_currentIndex]);
+
+        if (_currentIndex < 0)
+        {
+            // Before first load — just queue first few files within budget
+            for (int i = 0; i < _files.Count; i++)
+            {
+                long cost = RuntimeSplatLoader.EstimateAssetBytes(_files[i]);
+                if (budget > 0 && accumulated + cost > budget) break;
+                accumulated += cost;
+                desired.Add(_files[i]);
+            }
+        }
+        else
+        {
+            // Alternate: +1, -1, +2, -2, +3, -3, ...
+            int maxOffset = _files.Count / 2 + 1;
+            for (int offset = 1; offset <= maxOffset && desired.Count < _files.Count; offset++)
+            {
+                // Forward
+                int fwd = (_currentIndex + offset) % _files.Count;
+                if (!desired.Contains(_files[fwd]))
+                {
+                    long cost = RuntimeSplatLoader.EstimateAssetBytes(_files[fwd]);
+                    if (budget > 0 && accumulated + cost > budget) break;
+                    accumulated += cost;
+                    desired.Add(_files[fwd]);
+                }
+
+                // Backward
+                int bwd = (_currentIndex - offset + _files.Count) % _files.Count;
+                if (!desired.Contains(_files[bwd]))
+                {
+                    long cost = RuntimeSplatLoader.EstimateAssetBytes(_files[bwd]);
+                    if (budget > 0 && accumulated + cost > budget) break;
+                    accumulated += cost;
+                    desired.Add(_files[bwd]);
+                }
+            }
+        }
+
+        loader.SetPreloadTargets(desired);
+        foreach (string filePath in desired)
+        {
+            if (_currentIndex >= 0 && string.Equals(filePath, _files[_currentIndex], StringComparison.OrdinalIgnoreCase))
+                continue;
+            loader.BeginPreload(filePath);
         }
     }
 

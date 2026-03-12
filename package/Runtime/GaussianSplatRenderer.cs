@@ -966,7 +966,7 @@ namespace GaussianSplatting.Runtime
             }
             if (asset.chunkData != null)
             {
-                Debug.LogError("Only splats with VeryHigh quality can be resized");
+                Debug.LogError("Only splats imported with Lossless quality can be resized");
                 return;
             }
             if (newSplatCount == splatCount)
