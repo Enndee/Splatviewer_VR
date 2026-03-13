@@ -361,6 +361,10 @@ MonoBehaviour:
   loader: {fileID: 0}
   splatFolder: 
   autoLoadFirst: 0
+  preloadUpcomingFiles: 1
+  preloadRamFraction: 0.3
+  finalizePreloadsPerFrame: 1
+  movieFps: 10
   _currentFile: (none)
   _currentIndex: -1
   _totalFiles: 0

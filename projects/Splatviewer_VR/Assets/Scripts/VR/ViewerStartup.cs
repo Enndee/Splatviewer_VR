@@ -92,6 +92,11 @@ public sealed class ViewerStartup : MonoBehaviour
             return;
         }
 
+        // Reset world to neutral before loading
+        var worldGrab = FindAnyObjectByType<WorldGrabManipulator>();
+        if (worldGrab != null)
+            worldGrab.ResetWorld();
+
         if (!loader.LoadFile(filePath))
             return;
 

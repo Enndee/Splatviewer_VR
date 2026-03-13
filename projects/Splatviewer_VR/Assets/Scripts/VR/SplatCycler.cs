@@ -56,6 +56,7 @@ public class SplatCycler : MonoBehaviour
     bool _btnPrevReady = true;
     VRFileBrowser _browser;
     VRRig _rig;
+    WorldGrabManipulator _worldGrab;
 
     // Movie mode
     bool _moviePlaying;
@@ -71,6 +72,7 @@ public class SplatCycler : MonoBehaviour
             loader = GetComponent<RuntimeSplatLoader>();
         _browser = FindAnyObjectByType<VRFileBrowser>();
         _rig = FindAnyObjectByType<VRRig>();
+        _worldGrab = FindAnyObjectByType<WorldGrabManipulator>();
 
         ApplyPreloadBudget();
 
@@ -176,6 +178,10 @@ public class SplatCycler : MonoBehaviour
     public void LoadIndex(int index)
     {
         if (index < 0 || index >= _files.Count) return;
+
+        // Reset world to neutral before loading new scene
+        if (_worldGrab != null)
+            _worldGrab.ResetWorld();
 
         string path = _files[index];
         Debug.Log($"[SplatCycler] Loading [{index + 1}/{_files.Count}]: {Path.GetFileName(path)}");

@@ -7,13 +7,17 @@ using UnityEngine.XR;
 /// Smooth locomotion and snap-turn for the VR Gaussian Splatting viewer.
 ///
 /// Controls (VR):
-///   Left stick         → smooth move (relative to HMD facing direction, XZ plane)
-///   Right stick X      → snap turn (configurable degrees per click)
-///   Right stick Y      → fly up / down (useful for inspecting splats from above)
+///   Right stick Y      → smooth move forward / backward (relative to HMD facing)
+///   Right stick X      → snap turn left / right
+///   Left  stick X      → strafe left / right
+///   Left  stick Y      → fly up / down
+///
+/// All VR movement is blocked while WorldGrabManipulator.IsManipulating is true,
+/// so world manipulation and locomotion never interfere.
 ///
 /// Keyboard fallback (editor / desktop, no HMD):
 ///   W / A / S / D      → move forward / left / back / right
-///   Q / E              → move down / up
+///   Space / C          → move up / down
 ///   Mouse drag (RMB)   → look
 /// </summary>
 [RequireComponent(typeof(VRRig))]
@@ -23,7 +27,7 @@ public class VRLocomotion : MonoBehaviour
     [Tooltip("Horizontal move speed in metres per second.")]
     public float moveSpeed = 2.5f;
 
-    [Tooltip("Vertical fly speed in metres per second (right stick Y).")]
+    [Tooltip("Vertical fly speed in metres per second (left stick Y).")]
     public float flySpeed = 1.5f;
 
     [Tooltip("Analogue stick dead-zone radius (0–1).")]
@@ -47,6 +51,7 @@ public class VRLocomotion : MonoBehaviour
     bool   _snapTurnReady = true;
     float  _mousePitch;   // accumulated vertical mouse look (desktop only)
     VRFileBrowser _browser;
+    WorldGrabManipulator _grabManipulator;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -54,6 +59,9 @@ public class VRLocomotion : MonoBehaviour
     {
         _rig = GetComponent<VRRig>();
         _browser = FindAnyObjectByType<VRFileBrowser>();
+        _grabManipulator = GetComponent<WorldGrabManipulator>();
+        if (_grabManipulator == null)
+            _grabManipulator = FindAnyObjectByType<WorldGrabManipulator>();
 
         if (XRSettings.isDeviceActive)
             SyncDesktopPitchFromCamera();
@@ -105,13 +113,17 @@ public class VRLocomotion : MonoBehaviour
     void VRMove()
     {
         if (_browser != null && _browser.IsOpen) return;
+        if (_grabManipulator != null && _grabManipulator.IsManipulating) return;
 
+        // Right stick Y → forward/backward, Left stick X → strafe
+        Vector2 rightStick = ReadStick(XRNode.RightHand);
         Vector2 leftStick = ReadStick(XRNode.LeftHand);
-        if (leftStick.magnitude <= stickDeadzone)
-            return;
 
-        // Use the camera's world-space axes so direction is always correct regardless
-        // of XROrigin rotation (snap turns, spawn orientation, etc.)
+        float forward = Mathf.Abs(rightStick.y) > stickDeadzone ? rightStick.y : 0f;
+        float strafe = Mathf.Abs(leftStick.x) > stickDeadzone ? leftStick.x : 0f;
+        float fly = Mathf.Abs(leftStick.y) > stickDeadzone ? leftStick.y : 0f;
+
+        // Use the camera's world-space axes so direction is always correct
         Camera cam = _rig != null ? _rig.xrCamera : Camera.main;
         if (cam == null) return;
 
@@ -124,32 +136,33 @@ public class VRLocomotion : MonoBehaviour
         headRight.y = 0f;
         headRight.Normalize();
 
-        Vector3 move = (headForward * leftStick.y + headRight * leftStick.x)
+        Vector3 move = (headForward * forward + headRight * strafe)
                        * moveSpeed * Time.deltaTime;
-        transform.position += move;
+
+        // Left stick Y → fly up/down
+        move += Vector3.up * (fly * flySpeed * Time.deltaTime);
+
+        if (move.sqrMagnitude > 0.0001f)
+            transform.position += move;
     }
 
     void VRSnapTurn()
     {
-        // Right stick is used by file browser when open
         if (_browser != null && _browser.IsOpen) return;
+        if (_grabManipulator != null && _grabManipulator.IsManipulating) return;
 
+        // Right stick X → snap turn
         Vector2 rightStick = ReadStick(XRNode.RightHand);
 
-        // Horizontal axis → snap rotate the XR Origin
         if (Mathf.Abs(rightStick.x) > 0.7f && _snapTurnReady)
         {
-            transform.Rotate(0f, snapAngle * Mathf.Sign(rightStick.x), 0f);
+            RotateRigAroundHead(snapAngle * Mathf.Sign(rightStick.x));
             _snapTurnReady = false;
         }
         else if (Mathf.Abs(rightStick.x) < 0.3f)
         {
             _snapTurnReady = true;
         }
-
-        // Vertical axis → fly up / down
-        if (Mathf.Abs(rightStick.y) > stickDeadzone)
-            transform.position += Vector3.up * (rightStick.y * flySpeed * Time.deltaTime);
     }
 
     // ── Keyboard / mouse fallback ─────────────────────────────────────────────
@@ -228,6 +241,16 @@ public class VRLocomotion : MonoBehaviour
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /// <summary>Rotates the rig around the HMD position so the player doesn't drift laterally.</summary>
+    void RotateRigAroundHead(float angleDegrees)
+    {
+        Camera cam = _rig != null ? _rig.xrCamera : Camera.main;
+        if (cam != null)
+            transform.RotateAround(cam.transform.position, Vector3.up, angleDegrees);
+        else
+            transform.Rotate(0f, angleDegrees, 0f);
+    }
+
     /// <summary>Reads the primary 2D axis (thumbstick) from an XR controller node.</summary>
     static Vector2 ReadStick(XRNode node)
     {
@@ -237,21 +260,5 @@ public class VRLocomotion : MonoBehaviour
             devices[0].TryGetFeatureValue(CommonUsages.primary2DAxis, out Vector2 v))
             return v;
         return Vector2.zero;
-    }
-
-    /// <summary>Returns the HMD's look direction projected flat onto the XZ plane.</summary>
-    static Vector3 GetHMDForwardFlat()
-    {
-        var devices = new List<InputDevice>();
-        InputDevices.GetDevicesAtXRNode(XRNode.Head, devices);
-        if (devices.Count > 0 &&
-            devices[0].TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion rot))
-        {
-            Vector3 fwd = rot * Vector3.forward;
-            fwd.y = 0f;
-            if (fwd.sqrMagnitude > 0.001f)
-                return fwd.normalized;
-        }
-        return Vector3.forward;
     }
 }

@@ -31,6 +31,9 @@ public class VRFileBrowser : MonoBehaviour
     [Tooltip("Optional SplatCycler — its folder will be updated when a file is loaded from the browser.")]
     public SplatCycler cycler;
 
+    [Tooltip("Optional WorldGrabManipulator — world is reset before each file load.")]
+    public WorldGrabManipulator worldGrab;
+
     [Tooltip("Initial folder path. Leave empty to start at drive list.")]
     public string startPath = "";
 
@@ -114,6 +117,7 @@ public class VRFileBrowser : MonoBehaviour
     {
         if (loader == null) loader = FindAnyObjectByType<RuntimeSplatLoader>();
         if (cycler == null) cycler = FindAnyObjectByType<SplatCycler>();
+        if (worldGrab == null) worldGrab = FindAnyObjectByType<WorldGrabManipulator>();
 
         _currentPath = string.IsNullOrEmpty(startPath) ? null : startPath;
 
@@ -534,6 +538,10 @@ public class VRFileBrowser : MonoBehaviour
                 if (_movieState != MovieState.Idle)
                     StopMovieMode();
 
+                // Reset world to neutral before loading new scene
+                if (worldGrab != null)
+                    worldGrab.ResetWorld();
+
                 bool ok = loader.LoadFile(entry.path);
                 if (ok)
                 {
@@ -776,13 +784,17 @@ public class VRFileBrowser : MonoBehaviour
             + "B: parent folder\n"
             + "X: toggle preload\n"
             + "R-Stick click: start movie\n\n"
+            + "Locomotion\n"
+            + "R-Stick Y: forward / back\n"
+            + "R-Stick X: snap turn\n"
+            + "L-Stick X: strafe\n"
+            + "L-Stick Y: up / down\n\n"
+            + "World Manipulation\n"
+            + "R-Grip: grab & move world\n"
+            + "R-Trigger: rotate world\n\n"
             + "Movie Playback\n"
             + "L-Stick left/right: FPS -/+\n"
             + "Y: stop movie\n\n"
-            + "Scene\n"
-            + "L-Grip + R-Stick: rotate splat\n"
-            + "L-Grip + X: flip\n"
-            + "L-Grip + A: reset rotation\n\n"
             + preloadStatus + "\n"
             + movieStatus
             : "Browser\n"
