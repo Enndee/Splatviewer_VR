@@ -41,6 +41,7 @@ public class VRRig : MonoBehaviour
         AutoResolveReferences();
         ApplySpawnPoint();
         ApplyCameraOffset();
+        ApplyNearClip();
     }
 
     void OnEnable()
@@ -129,6 +130,12 @@ public class VRRig : MonoBehaviour
             return;
 
         transform.rotation = Quaternion.LookRotation(lookDirection.normalized, Vector3.up);
+    }
+
+    void ApplyNearClip()
+    {
+        if (xrCamera != null)
+            xrCamera.nearClipPlane = 0.01f;
     }
 
     void ApplyCameraOffset()
