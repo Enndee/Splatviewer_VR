@@ -138,6 +138,13 @@ public class VRRig : MonoBehaviour
             xrCamera.nearClipPlane = 0.01f;
     }
 
+    void LateUpdate()
+    {
+        // Re-enforce near clip — some XR runtimes reset it each frame
+        if (xrCamera != null && xrCamera.nearClipPlane != 0.01f)
+            xrCamera.nearClipPlane = 0.01f;
+    }
+
     void ApplyCameraOffset()
     {
         // Only apply a manual eye-height offset when the XR runtime uses seated/stationary

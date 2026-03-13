@@ -27,6 +27,10 @@ public class WorldGrabManipulator : MonoBehaviour
     [Tooltip("Trigger value above which rotation begins.")]
     [Range(0f, 1f)] public float triggerThreshold = 0.5f;
 
+    [Header("Smoothing")]
+    [Tooltip("Rotation smoothing speed. Higher = snappier. 0 = instant (no smoothing).")]
+    [Range(0f, 50f)] public float rotationSmoothing = 0f;
+
     // ── State flags ──────────────────────────────────────────────────────────
 
     /// <summary>True while right grip is held and world is being translated.</summary>
@@ -54,6 +58,10 @@ public class WorldGrabManipulator : MonoBehaviour
     Vector3 _rotatePivotStart;
     Vector3 _rotateWorldStartPos;
     Quaternion _rotateWorldStartRot;
+
+    // Smoothing targets (used when rotationSmoothing > 0)
+    Quaternion _targetRotation;
+    Vector3 _targetPosition;
 
     // ── Cache ────────────────────────────────────────────────────────────────
 
@@ -123,9 +131,22 @@ public class WorldGrabManipulator : MonoBehaviour
             // Delta rotation of the hand since start
             Quaternion deltaRot = handRot * Quaternion.Inverse(_rotateHandStartRot);
 
-            // Apply rotation to WorldRoot around the hand's initial pivot point
-            worldRoot.rotation = deltaRot * _rotateWorldStartRot;
-            worldRoot.position = _rotatePivotStart + deltaRot * (_rotateWorldStartPos - _rotatePivotStart);
+            // Compute target rotation and position around the hand's initial pivot point
+            _targetRotation = deltaRot * _rotateWorldStartRot;
+            _targetPosition = _rotatePivotStart + deltaRot * (_rotateWorldStartPos - _rotatePivotStart);
+
+            if (rotationSmoothing <= 0f)
+            {
+                // Instant — no smoothing
+                worldRoot.rotation = _targetRotation;
+                worldRoot.position = _targetPosition;
+            }
+            else
+            {
+                float t = 1f - Mathf.Exp(-rotationSmoothing * Time.deltaTime);
+                worldRoot.rotation = Quaternion.Slerp(worldRoot.rotation, _targetRotation, t);
+                worldRoot.position = Vector3.Lerp(worldRoot.position, _targetPosition, t);
+            }
         }
         else
         {

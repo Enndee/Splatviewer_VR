@@ -156,7 +156,7 @@ public class VRLocomotion : MonoBehaviour
 
         if (Mathf.Abs(rightStick.x) > 0.7f && _snapTurnReady)
         {
-            transform.Rotate(0f, snapAngle * Mathf.Sign(rightStick.x), 0f);
+            RotateRigAroundHead(snapAngle * Mathf.Sign(rightStick.x));
             _snapTurnReady = false;
         }
         else if (Mathf.Abs(rightStick.x) < 0.3f)
@@ -240,6 +240,16 @@ public class VRLocomotion : MonoBehaviour
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// <summary>Rotates the rig around the HMD position so the player doesn't drift laterally.</summary>
+    void RotateRigAroundHead(float angleDegrees)
+    {
+        Camera cam = _rig != null ? _rig.xrCamera : Camera.main;
+        if (cam != null)
+            transform.RotateAround(cam.transform.position, Vector3.up, angleDegrees);
+        else
+            transform.Rotate(0f, angleDegrees, 0f);
+    }
 
     /// <summary>Reads the primary 2D axis (thumbstick) from an XR controller node.</summary>
     static Vector2 ReadStick(XRNode node)
