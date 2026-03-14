@@ -132,6 +132,7 @@ GameObject:
   - component: {fileID: 13104420}
   - component: {fileID: 13104419}
   - component: {fileID: 13104423}
+  - component: {fileID: 13104424}
   m_Layer: 0
   m_Name: XRorigin
   m_TagString: Untagged
@@ -220,8 +221,24 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   loader: {fileID: 0}
   cycler: {fileID: 0}
-  startPath: 
+  startPath:
   spawnDistance: 1
+--- !u!114 &13104424
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 13104418}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 61ce1853ef7a43bb9c3c48432124cd16, type: 3}
+  m_Name:
+  m_EditorClassIdentifier:
+  worldRoot: {fileID: 100000001}
+  gripThreshold: 0.5
+  triggerThreshold: 0.5
+  rotationSmoothing: 0
 --- !u!1 &89606358
 GameObject:
   m_ObjectHideFlags: 0
@@ -314,7 +331,7 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
-  m_Father: {fileID: 0}
+  m_Father: {fileID: 100000001}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &657962663
 MonoBehaviour:
@@ -649,11 +666,43 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 50, y: -30, z: 0}
+--- !u!1 &100000000
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 100000001}
+  m_Layer: 0
+  m_Name: WorldRoot
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &100000001
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 100000000}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children:
+  - {fileID: 657962662}
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
   - {fileID: 782749824}
-  - {fileID: 657962662}
+  - {fileID: 100000001}
   - {fileID: 13104422}
   - {fileID: 89606359}
