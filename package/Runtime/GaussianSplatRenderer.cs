@@ -117,9 +117,12 @@ namespace GaussianSplatting.Runtime
 
                 // sort
                 var matrix = gs.transform.localToWorldMatrix;
-                if (gs.m_FrameCounter % gs.m_SortNthFrame == 0)
+                if (gs.ShouldSort(cam))
+                {
                     gs.SortPoints(cmb, cam, matrix);
-                ++gs.m_FrameCounter;
+                    gs.RecordSortPose(cam);
+                }
+                gs.AdvanceFrameState();
 
                 // cache view
                 kvp.Item2.Clear();
@@ -129,7 +132,7 @@ namespace GaussianSplatting.Runtime
                     GaussianSplatRenderer.RenderMode.DebugPointIndices => gs.m_MatDebugPoints,
                     GaussianSplatRenderer.RenderMode.DebugBoxes => gs.m_MatDebugBoxes,
                     GaussianSplatRenderer.RenderMode.DebugChunkBounds => gs.m_MatDebugBoxes,
-                    _ => gs.m_MatSplats
+                    _ => gs.m_UseOpaqueRenderHack && gs.m_MatSplatsOpaque != null ? gs.m_MatSplatsOpaque : gs.m_MatSplats
                 };
                 if (displayMat == null)
                     continue;
@@ -143,6 +146,9 @@ namespace GaussianSplatting.Runtime
                 mpb.SetFloat(GaussianSplatRenderer.Props.SplatScale, gs.m_SplatScale);
                 mpb.SetFloat(GaussianSplatRenderer.Props.SplatOpacityScale, gs.m_OpacityScale);
                 mpb.SetFloat(GaussianSplatRenderer.Props.SplatSize, gs.m_PointDisplaySize);
+                mpb.SetFloat(GaussianSplatRenderer.Props.SplatClipThreshold, gs.m_AlphaClipThreshold);
+                mpb.SetFloat(GaussianSplatRenderer.Props.SplatEdgeSharpness, gs.m_SplatEdgeSharpness);
+                mpb.SetInteger(GaussianSplatRenderer.Props.SplatOpaqueMode, gs.m_UseOpaqueRenderHack ? 1 : 0);
                 mpb.SetInteger(GaussianSplatRenderer.Props.SHOrder, gs.m_SHOrder);
                 mpb.SetInteger(GaussianSplatRenderer.Props.SHOnly, gs.m_SHOnly ? 1 : 0);
                 mpb.SetInteger(GaussianSplatRenderer.Props.DisplayIndex, gs.m_RenderMode == GaussianSplatRenderer.RenderMode.DebugPointIndices ? 1 : 0);
@@ -222,6 +228,13 @@ namespace GaussianSplatting.Runtime
             DebugBoxes,
             DebugChunkBounds,
         }
+
+        public enum SortMode
+        {
+            EveryNthFrame,
+            OnTransformChange,
+            Once,
+        }
         public GaussianSplatAsset m_Asset;
 
         [Tooltip("Rendering order compared to other splats. Within same order splats are sorted by distance. Higher order splats render 'on top of' lower order splats.")]
@@ -237,6 +250,20 @@ namespace GaussianSplatting.Runtime
         public bool m_SHOnly;
         [Range(1,30)] [Tooltip("Sort splats only every N frames")]
         public int m_SortNthFrame = 1;
+        [Tooltip("Controls when splat sorting is updated. Threshold-based sorting is much cheaper in VR when the viewer mostly stands in place.")]
+        public SortMode m_SortMode = SortMode.EveryNthFrame;
+        [Range(0.0f, 0.5f)] [Tooltip("Re-sort once the camera moved farther than this world-space distance.")]
+        public float m_SortPositionThreshold = 0.03f;
+        [Range(0.0f, 45.0f)] [Tooltip("Re-sort once the view direction rotated more than this angle in degrees.")]
+        public float m_SortAngleThreshold = 4.0f;
+        [Range(1, 120)] [Tooltip("Failsafe refresh interval for threshold-based sorting.")]
+        public int m_SortMaxFramesWithoutUpdate = 18;
+        [Range(1.0f / 255.0f, 0.95f)] [Tooltip("Discards low-alpha splat pixels early to cut overdraw.")]
+        public float m_AlphaClipThreshold = 1.0f / 255.0f;
+        [Range(0.25f, 8.0f)] [Tooltip("Higher values tighten the splat footprint and reduce overdraw.")]
+        public float m_SplatEdgeSharpness = 1.0f;
+        [Tooltip("Replaces alpha blending with an opaque alpha-clipped hack. Very fast, very ugly.")]
+        public bool m_UseOpaqueRenderHack;
 
         public RenderMode m_RenderMode = RenderMode.Splats;
         [Range(1.0f,15.0f)] public float m_PointDisplaySize = 3.0f;
@@ -244,6 +271,7 @@ namespace GaussianSplatting.Runtime
         public GaussianCutout[] m_Cutouts;
 
         public Shader m_ShaderSplats;
+        public Shader m_ShaderSplatsOpaque;
         public Shader m_ShaderComposite;
         public Shader m_ShaderDebugPoints;
         public Shader m_ShaderDebugBoxes;
@@ -275,11 +303,16 @@ namespace GaussianSplatting.Runtime
         GpuSorting.Args m_SorterArgs;
 
         internal Material m_MatSplats;
+        internal Material m_MatSplatsOpaque;
         internal Material m_MatComposite;
         internal Material m_MatDebugPoints;
         internal Material m_MatDebugBoxes;
 
         internal int m_FrameCounter;
+        int m_FramesSinceLastSort;
+        bool m_HasLastSortPose;
+        Vector3 m_LastSortCamPosition;
+        Vector3 m_LastSortCamForward;
         GaussianSplatAsset m_PrevAsset;
         Hash128 m_PrevHash;
         bool m_Registered;
@@ -303,6 +336,9 @@ namespace GaussianSplatting.Runtime
             public static readonly int SplatScale = Shader.PropertyToID("_SplatScale");
             public static readonly int SplatOpacityScale = Shader.PropertyToID("_SplatOpacityScale");
             public static readonly int SplatSize = Shader.PropertyToID("_SplatSize");
+            public static readonly int SplatClipThreshold = Shader.PropertyToID("_SplatClipThreshold");
+            public static readonly int SplatEdgeSharpness = Shader.PropertyToID("_SplatEdgeSharpness");
+            public static readonly int SplatOpaqueMode = Shader.PropertyToID("_SplatOpaqueMode");
             public static readonly int SplatCount = Shader.PropertyToID("_SplatCount");
             public static readonly int SHOrder = Shader.PropertyToID("_SHOrder");
             public static readonly int SHOnly = Shader.PropertyToID("_SHOnly");
@@ -452,6 +488,9 @@ namespace GaussianSplatting.Runtime
             if (m_MatSplats == null && resourcesAreSetUp)
             {
                 m_MatSplats = new Material(m_ShaderSplats) {name = "GaussianSplats"};
+                Shader opaqueShader = m_ShaderSplatsOpaque != null ? m_ShaderSplatsOpaque : Shader.Find("Gaussian Splatting/Render Splats Opaque Hack");
+                if (opaqueShader != null)
+                    m_MatSplatsOpaque = new Material(opaqueShader) { name = "GaussianSplatsOpaqueHack" };
                 m_MatComposite = new Material(m_ShaderComposite) {name = "GaussianClearDstAlpha"};
                 m_MatDebugPoints = new Material(m_ShaderDebugPoints) {name = "GaussianDebugPoints"};
                 m_MatDebugBoxes = new Material(m_ShaderDebugBoxes) {name = "GaussianDebugBoxes"};
@@ -475,6 +514,8 @@ namespace GaussianSplatting.Runtime
         public void OnEnable()
         {
             m_FrameCounter = 0;
+            m_FramesSinceLastSort = 0;
+            m_HasLastSortPose = false;
             if (!resourcesAreSetUp)
                 return;
 
@@ -571,9 +612,48 @@ namespace GaussianSplatting.Runtime
             m_Registered = false;
 
             DestroyImmediate(m_MatSplats);
+            DestroyImmediate(m_MatSplatsOpaque);
             DestroyImmediate(m_MatComposite);
             DestroyImmediate(m_MatDebugPoints);
             DestroyImmediate(m_MatDebugBoxes);
+        }
+
+        internal bool ShouldSort(Camera cam)
+        {
+            switch (m_SortMode)
+            {
+                case SortMode.Once:
+                    return !m_HasLastSortPose;
+                case SortMode.OnTransformChange:
+                {
+                    if (!m_HasLastSortPose)
+                        return true;
+
+                    float positionThreshold = Mathf.Max(0.0f, m_SortPositionThreshold);
+                    float angleThreshold = Mathf.Max(0.0f, m_SortAngleThreshold);
+                    bool moved = positionThreshold > 0.0f && (cam.transform.position - m_LastSortCamPosition).sqrMagnitude >= positionThreshold * positionThreshold;
+                    bool rotated = angleThreshold > 0.0f && Vector3.Angle(cam.transform.forward, m_LastSortCamForward) >= angleThreshold;
+                    bool stale = m_FramesSinceLastSort >= Mathf.Max(1, m_SortMaxFramesWithoutUpdate);
+                    return moved || rotated || stale;
+                }
+                default:
+                    return m_FrameCounter % Mathf.Max(1, m_SortNthFrame) == 0;
+            }
+        }
+
+        internal void RecordSortPose(Camera cam)
+        {
+            m_HasLastSortPose = true;
+            m_LastSortCamPosition = cam.transform.position;
+            m_LastSortCamForward = cam.transform.forward;
+            m_FramesSinceLastSort = 0;
+        }
+
+        internal void AdvanceFrameState()
+        {
+            ++m_FrameCounter;
+            if (m_HasLastSortPose)
+                ++m_FramesSinceLastSort;
         }
 
         internal void CalcViewData(CommandBuffer cmb, Camera cam)

@@ -24,11 +24,12 @@ namespace GaussianSplatting.Editor
         const string kPrefQuality = "nesnausk.GaussianSplatting.CreatorQuality";
         const string kPrefQualityVersion = "nesnausk.GaussianSplatting.CreatorQualityVersion";
         const string kPrefOutputFolder = "nesnausk.GaussianSplatting.CreatorOutputFolder";
-        const int kCurrentQualityPrefVersion = 2;
+        const int kCurrentQualityPrefVersion = 3;
 
         enum DataQuality
         {
             Lossless,
+            Quest,
             High,
             Medium,
             Low,
@@ -42,7 +43,7 @@ namespace GaussianSplatting.Editor
         [SerializeField] bool m_ImportCameras = true;
 
         [SerializeField] string m_OutputFolder = "Assets/GaussianAssets";
-        [SerializeField] DataQuality m_Quality = DataQuality.Lossless;
+        [SerializeField] DataQuality m_Quality = DataQuality.Quest;
         [SerializeField] GaussianSplatAsset.VectorFormat m_FormatPos;
         [SerializeField] GaussianSplatAsset.VectorFormat m_FormatScale;
         [SerializeField] GaussianSplatAsset.ColorFormat m_FormatColor;
@@ -75,13 +76,13 @@ namespace GaussianSplatting.Editor
             int qualityPrefVersion = EditorPrefs.GetInt(kPrefQualityVersion, 0);
             if (qualityPrefVersion < kCurrentQualityPrefVersion)
             {
-                m_Quality = DataQuality.Lossless;
+                m_Quality = DataQuality.Quest;
                 EditorPrefs.SetInt(kPrefQuality, (int)m_Quality);
                 EditorPrefs.SetInt(kPrefQualityVersion, kCurrentQualityPrefVersion);
             }
             else
             {
-                m_Quality = (DataQuality)EditorPrefs.GetInt(kPrefQuality, (int)DataQuality.Lossless);
+                m_Quality = (DataQuality)EditorPrefs.GetInt(kPrefQuality, (int)DataQuality.Quest);
             }
             m_OutputFolder = EditorPrefs.GetString(kPrefOutputFolder, "Assets/GaussianAssets");
         }
@@ -142,6 +143,8 @@ namespace GaussianSplatting.Editor
 
             if (m_Quality == DataQuality.Lossless)
                 EditorGUILayout.HelpBox("Lossless import is enabled. Gaussian count stays the same, Float32 data is kept, and no chunk-based quantization or SH clustering is applied.", MessageType.Info);
+            else if (m_Quality == DataQuality.Quest)
+                EditorGUILayout.HelpBox("Quest preset prioritizes geometry over color fidelity. It uses higher precision for position, lower precision for color, and aggressively compresses SH data for mobile VR.", MessageType.Warning);
             else if (m_Quality != DataQuality.Custom)
                 EditorGUILayout.HelpBox("This preset modifies imported splat data to reduce asset size. Use Lossless if you want to keep full precision on import.", MessageType.Warning);
 
@@ -222,6 +225,12 @@ namespace GaussianSplatting.Editor
                     m_FormatScale = GaussianSplatAsset.VectorFormat.Float32;
                     m_FormatColor = GaussianSplatAsset.ColorFormat.Float32x4;
                     m_FormatSH = GaussianSplatAsset.SHFormat.Float32;
+                    break;
+                case DataQuality.Quest: // geometry-first mobile preset for standalone VR
+                    m_FormatPos = GaussianSplatAsset.VectorFormat.Norm16;
+                    m_FormatScale = GaussianSplatAsset.VectorFormat.Norm11;
+                    m_FormatColor = GaussianSplatAsset.ColorFormat.Norm8x4;
+                    m_FormatSH = GaussianSplatAsset.SHFormat.Cluster4k;
                     break;
                 case DataQuality.VeryLow: // 18.62x smaller, 32.27 PSNR
                     m_FormatPos = GaussianSplatAsset.VectorFormat.Norm11;

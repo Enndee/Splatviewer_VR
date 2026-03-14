@@ -185,7 +185,6 @@ public class SplatCycler : MonoBehaviour
             _currentIndex = index;
             _currentFile = Path.GetFileName(path);
             RefreshPreloadWindow();
-            if (_rig != null) _rig.ResetToSpawnPoint(loader != null ? loader.targetRenderer : null);
         }
     }
 

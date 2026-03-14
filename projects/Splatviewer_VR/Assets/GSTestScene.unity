@@ -156,6 +156,7 @@ MonoBehaviour:
   stickDeadzone: 0.2
   snapAngle: 45
   mouseSensitivity: 2
+  dragSpeed: 0.01
   lockCursorInDesktopMode: 1
 --- !u!114 &13104420
 MonoBehaviour:
@@ -293,10 +294,18 @@ MonoBehaviour:
   m_SHOrder: 3
   m_SHOnly: 0
   m_SortNthFrame: 1
+  m_SortMode: 0
+  m_SortPositionThreshold: 0.03
+  m_SortAngleThreshold: 4
+  m_SortMaxFramesWithoutUpdate: 18
+  m_AlphaClipThreshold: 0.003921569
+  m_SplatEdgeSharpness: 1
+  m_UseOpaqueRenderHack: 0
   m_RenderMode: 0
   m_PointDisplaySize: 3
   m_Cutouts: []
   m_ShaderSplats: {fileID: 4800000, guid: ed800126ae8844a67aad1974ddddd59c, type: 3}
+  m_ShaderSplatsOpaque: {fileID: 0}
   m_ShaderComposite: {fileID: 4800000, guid: 7e184af7d01193a408eb916d8acafff9, type: 3}
   m_ShaderDebugPoints: {fileID: 4800000, guid: b44409fc67214394f8f47e4e2648425e, type: 3}
   m_ShaderDebugBoxes: {fileID: 4800000, guid: 4006f2680fd7c8b4cbcb881454c782be, type: 3}

@@ -220,12 +220,16 @@ internal static class PlayCanvasSogReader
         float c = DecodeQuatComponent(quatPixel.b);
         float omitted = math.sqrt(math.max(0f, 1f - (a * a + b * b + c * c)));
 
+        // SOG stores quaternion components in (w,x,y,z) order with mode indicating
+        // which was largest/omitted: 0=w, 1=x, 2=y, 3=z.
+        // The remaining 3 are stored in order: a,b,c = next components after the gap.
+        // PackSmallest3Rotation expects (x,y,z,w) order.
         float4 q = mode switch
         {
-            0 => new float4(omitted, a, b, c),
-            1 => new float4(a, omitted, b, c),
-            2 => new float4(a, b, omitted, c),
-            3 => new float4(a, b, c, omitted),
+            0 => new float4(a, b, c, omitted),       // w omitted; a=x, b=y, c=z → (x, y, z, w)
+            1 => new float4(omitted, b, c, a),        // x omitted; a=w, b=y, c=z → (x, y, z, w)
+            2 => new float4(b, omitted, c, a),        // y omitted; a=w, b=x, c=z → (x, y, z, w)
+            3 => new float4(b, c, omitted, a),        // z omitted; a=w, b=x, c=y → (x, y, z, w)
             _ => throw new InvalidOperationException(),
         };
         return GaussianUtils.PackSmallest3Rotation(math.normalize(q));

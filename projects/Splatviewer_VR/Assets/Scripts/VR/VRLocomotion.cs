@@ -13,8 +13,9 @@ using UnityEngine.XR;
 ///
 /// Keyboard fallback (editor / desktop, no HMD):
 ///   W / A / S / D      → move forward / left / back / right
-///   Q / E              → move down / up
-///   Mouse drag (RMB)   → look
+///   Space / C          → move up / down
+///   Shift              → full-speed movement
+///   Left / right click → drag the camera
 /// </summary>
 [RequireComponent(typeof(VRRig))]
 public class VRLocomotion : MonoBehaviour
@@ -37,6 +38,9 @@ public class VRLocomotion : MonoBehaviour
     [Header("Mouse Look (desktop fallback)")]
     [Tooltip("Mouse look sensitivity when using the keyboard fallback.")]
     public float mouseSensitivity = 2f;
+
+    [Tooltip("Camera translation speed while dragging with the mouse.")]
+    public float dragSpeed = 0.01f;
 
     [Tooltip("Hide and lock the cursor while using desktop mode.")]
     public bool lockCursorInDesktopMode = true;
@@ -166,13 +170,14 @@ public class VRLocomotion : MonoBehaviour
         float v = (Input.GetKey(KeyCode.W) ? 1f : 0f) - (Input.GetKey(KeyCode.S) ? 1f : 0f);
         float y = (Input.GetKey(KeyCode.Space) ? 1f : 0f) - (Input.GetKey(KeyCode.C) ? 1f : 0f);
 
-        Vector3 forward = transform.forward;
-        forward.y = 0f;
+        Camera cam = _rig != null ? _rig.xrCamera : Camera.main;
+
+        Vector3 forward = cam != null ? cam.transform.forward : transform.forward;
         if (forward.sqrMagnitude < 0.001f)
             forward = Vector3.forward;
         forward.Normalize();
 
-        Vector3 right = transform.right;
+        Vector3 right = cam != null ? cam.transform.right : transform.right;
         right.y = 0f;
         if (right.sqrMagnitude < 0.001f)
             right = Vector3.right;
@@ -180,14 +185,27 @@ public class VRLocomotion : MonoBehaviour
 
         Vector3 move = (right * h + forward * v + Vector3.up * y);
         if (move.sqrMagnitude > 0.01f)
-            transform.position += move.normalized * moveSpeed * Time.deltaTime;
+        {
+            bool sprint = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+            float speedFactor = sprint ? 1f : (1f / 3f);
+            transform.position += move.normalized * moveSpeed * speedFactor * Time.deltaTime;
+        }
 
         bool allowMouseLook = !lockCursorInDesktopMode || Cursor.lockState == CursorLockMode.Locked;
         if (allowMouseLook)
         {
-            Camera cam = _rig != null ? _rig.xrCamera : Camera.main;
             float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity;
             float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity;
+            bool dragHeld = Input.GetMouseButton(0) || Input.GetMouseButton(1);
+
+            if (dragHeld)
+            {
+                Vector3 dragRight = cam != null ? cam.transform.right : transform.right;
+                Vector3 dragUp = cam != null ? cam.transform.up : Vector3.up;
+                Vector3 dragMove = (-dragRight * mouseX - dragUp * mouseY) * dragSpeed;
+                transform.position += dragMove;
+                return;
+            }
 
             transform.Rotate(0f, mouseX, 0f, Space.World);
 

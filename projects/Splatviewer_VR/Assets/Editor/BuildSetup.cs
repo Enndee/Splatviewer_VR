@@ -3,6 +3,7 @@ using System.Linq;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 
 [InitializeOnLoad]
@@ -34,9 +35,11 @@ public static class BuildSetup
 
     public static void BuildWindowsRelease()
     {
+        EnsureLatestProjectContent();
+
         string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-        string outputFolder = Path.Combine(projectRoot, "Release", "1.0");
-        Directory.CreateDirectory(outputFolder);
+        string outputFolder = Path.Combine(projectRoot, "Builds");
+        RecreateDirectory(outputFolder);
 
         string exePath = Path.Combine(outputFolder, "SplatViewer_VR.exe");
         string[] scenes = EditorBuildSettings.scenes.Where(scene => scene.enabled).Select(scene => scene.path).ToArray();
@@ -57,6 +60,21 @@ public static class BuildSetup
 
         CopyAssociationHelpers(projectRoot, outputFolder);
         Debug.Log($"[BuildSetup] Windows release build completed: {exePath}");
+    }
+
+    static void EnsureLatestProjectContent()
+    {
+        EditorSceneManager.SaveOpenScenes();
+        AssetDatabase.SaveAssets();
+        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+    }
+
+    static void RecreateDirectory(string path)
+    {
+        if (Directory.Exists(path))
+            Directory.Delete(path, true);
+
+        Directory.CreateDirectory(path);
     }
 
     static void CopyAssociationHelpers(string projectRoot, string outputFolder)

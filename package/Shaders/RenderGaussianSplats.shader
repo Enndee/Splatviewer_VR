@@ -31,6 +31,9 @@ struct v2f
 StructuredBuffer<SplatViewData> _SplatViewData;
 ByteAddressBuffer _SplatSelectedBits;
 uint _SplatBitsValid;
+float _SplatClipThreshold;
+float _SplatEdgeSharpness;
+int _SplatOpaqueMode;
 
 v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
 {
@@ -79,6 +82,7 @@ v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
 half4 frag (v2f i) : SV_Target
 {
 	float power = -dot(i.pos, i.pos);
+	power *= max(_SplatEdgeSharpness, 0.0001);
 	half alpha = exp(power);
 	if (i.col.a >= 0)
 	{
@@ -100,8 +104,10 @@ half4 frag (v2f i) : SV_Target
 		i.col.rgb = lerp(i.col.rgb, selectedColor, 0.5);
 	}
 	
-    if (alpha < 1.0/255.0)
-        discard;
+	clip(alpha - _SplatClipThreshold);
+
+	if (_SplatOpaqueMode != 0)
+		alpha = 1;
 
     half4 res = half4(i.col.rgb * alpha, alpha);
     return res;
