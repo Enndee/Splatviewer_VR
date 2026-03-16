@@ -44,8 +44,20 @@ public sealed class ViewerStartup : MonoBehaviour
 
     static void ApplyWindowMode()
     {
-        Screen.fullScreenMode = FullScreenMode.FullScreenWindow;
-        Screen.fullScreen = true;
+        if (UnityEngine.XR.XRSettings.isDeviceActive)
+        {
+            // Disable the desktop mirror entirely — shrink to 1×1 and stop
+            // rendering the VR eye texture to the companion window.
+            Screen.fullScreen = false;
+            Screen.fullScreenMode = FullScreenMode.Windowed;
+            Screen.SetResolution(1, 1, false);
+            UnityEngine.XR.XRSettings.showDeviceView = false;
+        }
+        else
+        {
+            Screen.fullScreenMode = FullScreenMode.FullScreenWindow;
+            Screen.fullScreen = true;
+        }
     }
 
     static void InitializeDesktopCursorState()

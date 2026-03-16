@@ -33,7 +33,7 @@ public class WorldGrabManipulator : MonoBehaviour
 
     [Header("Smoothing")]
     [Tooltip("Scales hand rotation before applying. Lower = slower/heavier feel.")]
-    [Range(0.05f, 1f)] public float rotationScale = 0.35f;
+    [Range(0.05f, 1f)] public float rotationScale = 1f;
 
     [Tooltip("Hand input filter strength. Higher = smoother but more latent. 0 = no filtering.")]
     [Range(0f, 50f)] public float inputSmoothing = 15f;
