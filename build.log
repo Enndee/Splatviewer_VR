@@ -1,0 +1,23 @@
+[Licensing::Module] Trying to connect to existing licensing client channel...
+Built from '6000.3/staging' branch; Version is '6000.3.11f1 (3000ef702840) revision 3145967'; Using compiler version '194234433'; Build Type 'Release'
+OS: 'Windows 11  (10.0.26200) Professional' Language: 'fr' Physical Memory: 65379 MB
+[Licensing::IpcConnector] Successfully connected to: "LicenseClient-PC00" at "2026-03-16T16:22:13.0986163Z"
+BatchMode: 1, IsHumanControllingUs: 0, StartBugReporterOnCrash: 0, Is64bit: 1
+System  architecture: x64
+Process architecture: x64
+Date: 2026-03-16T16:22:13Z
+
+COMMAND LINE ARGUMENTS:
+C:\Program Files\Unity\Hub\Editor\6000.3.11f1\Editor\Unity.exe
+-quit
+-batchmode
+-nographics
+-projectPath
+Q:\Splatviewer_VR\projects\Splatviewer_VR
+-executeMethod
+BuildSetup.BuildWindowsRelease
+-logFile
+Q:\Splatviewer_VR\build.log
+Successfully changed project path to: Q:\Splatviewer_VR\projects\Splatviewer_VR
+Q:/Splatviewer_VR/projects/Splatviewer_VR
+Exiting without the bug reporter. Application will terminate with return code 1
