@@ -11,8 +11,9 @@ using UnityEngine.XR;
 ///   Grip   → translate world 1:1 with hand delta
 ///   Trigger → rotate world around the controller pivot
 ///
-/// When rotation trigger is released, the world continues spinning with inertia
-/// and gradually decelerates.
+/// Hand input is filtered through an EMA (exponential moving average) to reduce
+/// jitter during rotation. When the trigger is released, inertia continues the
+/// motion with gradual deceleration.
 ///
 /// Other scripts query IsManipulating to disable themselves during manipulation.
 /// Call ResetWorld() before every scene load to return WorldRoot to identity.
@@ -31,7 +32,13 @@ public class WorldGrabManipulator : MonoBehaviour
     [Range(0f, 1f)] public float triggerThreshold = 0.5f;
 
     [Header("Smoothing")]
-    [Tooltip("Rotation smoothing speed. Higher = snappier. 0 = instant (no smoothing).")]
+    [Tooltip("Scales hand rotation before applying. Lower = slower/heavier feel.")]
+    [Range(0.05f, 1f)] public float rotationScale = 0.35f;
+
+    [Tooltip("Hand input filter strength. Higher = smoother but more latent. 0 = no filtering.")]
+    [Range(0f, 50f)] public float inputSmoothing = 15f;
+
+    [Tooltip("Output smoothing speed. Higher = snappier. 0 = instant.")]
     [Range(0f, 50f)] public float rotationSmoothing = 10f;
 
     [Header("Inertia")]
@@ -69,6 +76,10 @@ public class WorldGrabManipulator : MonoBehaviour
     Vector3 _rotateWorldStartPos;
     Quaternion _rotateWorldStartRot;
 
+    // Filtered hand input (EMA)
+    Quaternion _filteredHandRot;
+    Vector3 _filteredHandPos;
+
     // Smoothing targets (used when rotationSmoothing > 0)
     Quaternion _targetRotation;
     Vector3 _targetPosition;
@@ -77,8 +88,8 @@ public class WorldGrabManipulator : MonoBehaviour
 
     Vector3 _angularVelocity;        // axis * degrees/s
     Vector3 _linearVelocity;         // world units/s
-    Quaternion _prevHandRot;
-    Vector3 _prevHandPos;
+    Quaternion _prevFilteredRot;
+    Vector3 _prevFilteredPos;
     bool _hasInertia;
 
     // ── Cache ────────────────────────────────────────────────────────────────
@@ -145,40 +156,56 @@ public class WorldGrabManipulator : MonoBehaviour
                 _rotatePivotStart = handPos;
                 _rotateWorldStartPos = worldRoot.position;
                 _rotateWorldStartRot = worldRoot.rotation;
-                _prevHandRot = handRot;
-                _prevHandPos = handPos;
+                _filteredHandRot = handRot;
+                _filteredHandPos = handPos;
+                _prevFilteredRot = handRot;
+                _prevFilteredPos = handPos;
                 _angularVelocity = Vector3.zero;
                 _linearVelocity = Vector3.zero;
             }
 
-            // Delta rotation of the hand since start
-            Quaternion deltaRot = handRot * Quaternion.Inverse(_rotateHandStartRot);
+            // ── Filter hand input (EMA) to reduce jitter ──────────────────
+            if (inputSmoothing > 0f)
+            {
+                float f = 1f - Mathf.Exp(-inputSmoothing * Time.deltaTime);
+                _filteredHandRot = Quaternion.Slerp(_filteredHandRot, handRot, f);
+                _filteredHandPos = Vector3.Lerp(_filteredHandPos, handPos, f);
+            }
+            else
+            {
+                _filteredHandRot = handRot;
+                _filteredHandPos = handPos;
+            }
 
-            // Hand position delta (translation while rotating)
-            Vector3 handPosDelta = handPos - _rotatePivotStart;
+            // Delta rotation of the filtered hand since start, scaled down for heavier feel
+            Quaternion fullDelta = _filteredHandRot * Quaternion.Inverse(_rotateHandStartRot);
+            Quaternion deltaRot = Quaternion.Slerp(Quaternion.identity, fullDelta, rotationScale);
+
+            // Filtered hand position delta
+            Vector3 handPosDelta = _filteredHandPos - _rotatePivotStart;
 
             // Compute target rotation and position around the hand's initial pivot point,
             // plus controller translation so the world follows hand movement
             _targetRotation = deltaRot * _rotateWorldStartRot;
             _targetPosition = _rotatePivotStart + deltaRot * (_rotateWorldStartPos - _rotatePivotStart) + handPosDelta;
 
-            // Track angular/linear velocity for inertia
+            // Track angular/linear velocity from filtered input for inertia
             if (Time.deltaTime > 0f)
             {
-                Quaternion frameDelta = handRot * Quaternion.Inverse(_prevHandRot);
+                Quaternion frameDelta = _filteredHandRot * Quaternion.Inverse(_prevFilteredRot);
                 frameDelta.ToAngleAxis(out float angle, out Vector3 axis);
                 if (angle > 180f) angle -= 360f;
                 if (axis.sqrMagnitude > 0.001f)
                     _angularVelocity = Vector3.Lerp(_angularVelocity, axis.normalized * (angle / Time.deltaTime), 0.3f);
 
-                _linearVelocity = Vector3.Lerp(_linearVelocity, (handPos - _prevHandPos) / Time.deltaTime, 0.3f);
+                _linearVelocity = Vector3.Lerp(_linearVelocity, (_filteredHandPos - _prevFilteredPos) / Time.deltaTime, 0.3f);
             }
-            _prevHandRot = handRot;
-            _prevHandPos = handPos;
+            _prevFilteredRot = _filteredHandRot;
+            _prevFilteredPos = _filteredHandPos;
 
             if (rotationSmoothing <= 0f)
             {
-                // Instant — no smoothing
+                // Instant — no output smoothing
                 worldRoot.rotation = _targetRotation;
                 worldRoot.position = _targetPosition;
             }
