@@ -25,7 +25,7 @@ public class SplatRotator : MonoBehaviour
 
     [Header("Saved Rotation")]
     [Tooltip("Rotation applied at startup. Set this in the Inspector to bake a corrected orientation.")]
-    public Vector3 startEuler = Vector3.zero;
+    public Vector3 startEuler = new Vector3(180f, 0f, 0f);
 
     // ── Private ───────────────────────────────────────────────────────────────
 

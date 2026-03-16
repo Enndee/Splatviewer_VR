@@ -3,6 +3,7 @@ using System;
 using System.Collections;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using UnityEngine;
 
 [DefaultExecutionOrder(-1000)]
@@ -44,9 +45,34 @@ public sealed class ViewerStartup : MonoBehaviour
 
     static void ApplyWindowMode()
     {
-        Screen.fullScreenMode = FullScreenMode.FullScreenWindow;
-        Screen.fullScreen = true;
+        if (UnityEngine.XR.XRSettings.isDeviceActive)
+        {
+            // Minimize the desktop mirror window — no need to render on desktop in VR mode
+            MinimizeDesktopWindow();
+        }
+        else
+        {
+            Screen.fullScreenMode = FullScreenMode.FullScreenWindow;
+            Screen.fullScreen = true;
+        }
     }
+
+    static void MinimizeDesktopWindow()
+    {
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+        ShowWindow(GetActiveWindow(), SW_MINIMIZE);
+#endif
+    }
+
+#if UNITY_STANDALONE_WIN
+    const int SW_MINIMIZE = 6;
+
+    [DllImport("user32.dll")]
+    static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    static extern IntPtr GetActiveWindow();
+#endif
 
     static void InitializeDesktopCursorState()
     {

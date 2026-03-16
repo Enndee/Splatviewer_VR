@@ -11,6 +11,9 @@ using UnityEngine.XR;
 ///   Grip   → translate world 1:1 with hand delta
 ///   Trigger → rotate world around the controller pivot
 ///
+/// When rotation trigger is released, the world continues spinning with inertia
+/// and gradually decelerates.
+///
 /// Other scripts query IsManipulating to disable themselves during manipulation.
 /// Call ResetWorld() before every scene load to return WorldRoot to identity.
 /// </summary>
@@ -30,6 +33,13 @@ public class WorldGrabManipulator : MonoBehaviour
     [Header("Smoothing")]
     [Tooltip("Rotation smoothing speed. Higher = snappier. 0 = instant (no smoothing).")]
     [Range(0f, 50f)] public float rotationSmoothing = 10f;
+
+    [Header("Inertia")]
+    [Tooltip("How quickly rotation inertia decays after release. Higher = stops faster.")]
+    [Range(0.5f, 20f)] public float inertiaDrag = 4f;
+
+    [Tooltip("Angular speed (deg/s) below which inertia stops completely.")]
+    [Range(0.01f, 5f)] public float inertiaMinSpeed = 0.5f;
 
     // ── State flags ──────────────────────────────────────────────────────────
 
@@ -63,6 +73,14 @@ public class WorldGrabManipulator : MonoBehaviour
     Quaternion _targetRotation;
     Vector3 _targetPosition;
 
+    // ── Inertia state ─────────────────────────────────────────────────────────
+
+    Vector3 _angularVelocity;        // axis * degrees/s
+    Vector3 _linearVelocity;         // world units/s
+    Quaternion _prevHandRot;
+    Vector3 _prevHandPos;
+    bool _hasInertia;
+
     // ── Cache ────────────────────────────────────────────────────────────────
 
     VRFileBrowser _browser;
@@ -92,6 +110,7 @@ public class WorldGrabManipulator : MonoBehaviour
         // ── Translation (right grip) ────────────────────────────────────────
         if (grip >= gripThreshold)
         {
+            _hasInertia = false; // cancel inertia when grabbing
             Vector3 handPos = GetControllerWorldPosition(XRNode.RightHand);
 
             if (!IsGrabbing)
@@ -114,6 +133,7 @@ public class WorldGrabManipulator : MonoBehaviour
         // ── Rotation (right trigger) ────────────────────────────────────────
         if (trigger >= triggerThreshold && !IsGrabbing)
         {
+            _hasInertia = false; // cancel inertia while actively rotating
             Vector3 handPos = GetControllerWorldPosition(XRNode.RightHand);
             Quaternion handRot = GetControllerWorldRotation(XRNode.RightHand);
 
@@ -125,6 +145,10 @@ public class WorldGrabManipulator : MonoBehaviour
                 _rotatePivotStart = handPos;
                 _rotateWorldStartPos = worldRoot.position;
                 _rotateWorldStartRot = worldRoot.rotation;
+                _prevHandRot = handRot;
+                _prevHandPos = handPos;
+                _angularVelocity = Vector3.zero;
+                _linearVelocity = Vector3.zero;
             }
 
             // Delta rotation of the hand since start
@@ -137,6 +161,20 @@ public class WorldGrabManipulator : MonoBehaviour
             // plus controller translation so the world follows hand movement
             _targetRotation = deltaRot * _rotateWorldStartRot;
             _targetPosition = _rotatePivotStart + deltaRot * (_rotateWorldStartPos - _rotatePivotStart) + handPosDelta;
+
+            // Track angular/linear velocity for inertia
+            if (Time.deltaTime > 0f)
+            {
+                Quaternion frameDelta = handRot * Quaternion.Inverse(_prevHandRot);
+                frameDelta.ToAngleAxis(out float angle, out Vector3 axis);
+                if (angle > 180f) angle -= 360f;
+                if (axis.sqrMagnitude > 0.001f)
+                    _angularVelocity = Vector3.Lerp(_angularVelocity, axis.normalized * (angle / Time.deltaTime), 0.3f);
+
+                _linearVelocity = Vector3.Lerp(_linearVelocity, (handPos - _prevHandPos) / Time.deltaTime, 0.3f);
+            }
+            _prevHandRot = handRot;
+            _prevHandPos = handPos;
 
             if (rotationSmoothing <= 0f)
             {
@@ -153,7 +191,38 @@ public class WorldGrabManipulator : MonoBehaviour
         }
         else
         {
-            IsRotating = false;
+            if (IsRotating)
+            {
+                // Just released — start inertia
+                IsRotating = false;
+                _hasInertia = _angularVelocity.magnitude > inertiaMinSpeed;
+            }
+        }
+
+        // ── Inertia (after rotation release) ────────────────────────────────
+        if (_hasInertia)
+        {
+            float speed = _angularVelocity.magnitude;
+            if (speed < inertiaMinSpeed)
+            {
+                _hasInertia = false;
+            }
+            else
+            {
+                float dt = Time.deltaTime;
+
+                // Apply angular velocity as rotation around world center
+                Quaternion inertiaRot = Quaternion.AngleAxis(speed * dt, _angularVelocity.normalized);
+                worldRoot.rotation = inertiaRot * worldRoot.rotation;
+
+                // Also apply linear velocity
+                worldRoot.position += _linearVelocity * dt;
+
+                // Decay
+                float decay = Mathf.Exp(-inertiaDrag * dt);
+                _angularVelocity *= decay;
+                _linearVelocity *= decay;
+            }
         }
     }
 
@@ -172,6 +241,9 @@ public class WorldGrabManipulator : MonoBehaviour
 
         IsGrabbing = false;
         IsRotating = false;
+        _hasInertia = false;
+        _angularVelocity = Vector3.zero;
+        _linearVelocity = Vector3.zero;
     }
 
     // ── XR Helpers ───────────────────────────────────────────────────────────
