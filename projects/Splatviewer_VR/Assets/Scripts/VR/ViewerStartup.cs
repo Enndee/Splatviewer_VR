@@ -46,11 +46,12 @@ public sealed class ViewerStartup : MonoBehaviour
     {
         if (UnityEngine.XR.XRSettings.isDeviceActive)
         {
-            // In VR the desktop window is just a companion mirror —
-            // keep it windowed so it doesn't steal focus / cover the desktop.
+            // Disable the desktop mirror entirely — shrink to 1×1 and stop
+            // rendering the VR eye texture to the companion window.
             Screen.fullScreen = false;
             Screen.fullScreenMode = FullScreenMode.Windowed;
-            Screen.SetResolution(960, 540, false);
+            Screen.SetResolution(1, 1, false);
+            UnityEngine.XR.XRSettings.showDeviceView = false;
         }
         else
         {
