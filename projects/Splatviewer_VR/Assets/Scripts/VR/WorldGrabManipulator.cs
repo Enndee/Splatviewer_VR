@@ -29,7 +29,7 @@ public class WorldGrabManipulator : MonoBehaviour
 
     [Header("Smoothing")]
     [Tooltip("Rotation smoothing speed. Higher = snappier. 0 = instant (no smoothing).")]
-    [Range(0f, 50f)] public float rotationSmoothing = 15f;
+    [Range(0f, 50f)] public float rotationSmoothing = 10f;
 
     // ── State flags ──────────────────────────────────────────────────────────
 
