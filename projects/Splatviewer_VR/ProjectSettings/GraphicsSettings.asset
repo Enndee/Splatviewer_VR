@@ -59,6 +59,8 @@ GraphicsSettings:
   m_AlbedoSwatchInfos: []
   m_RenderPipelineGlobalSettingsMap:
     UnityEngine.Rendering.Universal.UniversalRenderPipeline: {fileID: 11400000, guid: 4a4013acd965b43a18804b89750c0297, type: 2}
+  m_ShaderBuildSettings:
+    keywordDeclarationOverrides: []
   m_LightsUseLinearIntensity: 1
   m_LightsUseColorTemperature: 1
   m_LogWhenShaderIsCompiled: 0
