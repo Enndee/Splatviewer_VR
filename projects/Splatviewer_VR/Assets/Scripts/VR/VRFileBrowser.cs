@@ -10,10 +10,13 @@ using UnityEngine.XR;
 /// <summary>
 /// World-space VR file browser for browsing the file system and loading .ply/.spz/.sog/.spx splat files.
 ///
+/// Layout: left 1/4 navigation list, right 3/4 preview panel (thumbnail or filename placeholder).
+/// Animation folders (containing 2+ splat files) are shown with a ▶ play icon; selecting them starts movie mode.
+///
 /// VR Controls:
 ///   Left Y (secondaryButton)  → toggle browser open/close
 ///   Left or right stick up/down → navigate list
-///   Left or right trigger     → select (enter folder / load file)
+///   Left or right trigger     → select (enter folder / load file / play animation)
 ///   Right B (secondaryButton) → go to parent directory
 ///
 /// Desktop fallback:
@@ -49,7 +52,7 @@ public class VRFileBrowser : MonoBehaviour
 
     // ── Layout constants ──────────────────────────────────────────────────────
 
-    const int CW = 900, CH = 650;
+    const int CW = 1200, CH = 650;
     const float SCALE = 0.001f;
     const int ROWS = 14;
     const int ROW_H = 38;
@@ -60,16 +63,24 @@ public class VRFileBrowser : MonoBehaviour
     const int FONT_PATH = 18;
     const int FONT_HINT = 16;
 
+    // Split layout: left nav ≈1/4, right preview ≈3/4
+    const int NAV_W = 360;
+    const int SEP_X = NAV_W + PAD;
+    const int PREVIEW_X = SEP_X + 6;
+    const int PREVIEW_W = CW - PREVIEW_X - PAD;
+
     // ── Colors ────────────────────────────────────────────────────────────────
 
     static readonly Color COL_BG      = new Color(0.08f, 0.08f, 0.10f, 0.96f);
     static readonly Color COL_SEL     = new Color(0.20f, 0.40f, 0.85f, 0.80f);
     static readonly Color COL_ROW_ALT = new Color(1f, 1f, 1f, 0.03f);
     static readonly Color COL_DIR     = new Color(1f, 0.88f, 0.40f);
+    static readonly Color COL_ANIM    = new Color(0.40f, 0.90f, 0.50f);
     static readonly Color COL_FILE    = Color.white;
     static readonly Color COL_PATH    = new Color(0.65f, 0.65f, 0.65f);
     static readonly Color COL_HINT    = new Color(0.45f, 0.45f, 0.45f);
     static readonly Color COL_CLEAR   = new Color(0f, 0f, 0f, 0f);
+    static readonly Color COL_PREVIEW_BG = new Color(0.06f, 0.06f, 0.08f, 1f);
 
     // ── State ─────────────────────────────────────────────────────────────────
 
@@ -86,8 +97,13 @@ public class VRFileBrowser : MonoBehaviour
     Text _helpText;
     Text[] _rowTexts;
     Image[] _rowBgs;
+    // Preview panel (right side)
+    GameObject _previewPanel;
     RawImage _thumbnailImage;
     Texture2D _thumbnailTex;
+    Text _previewNameText;
+    Text _previewPlayIcon;
+    string _lastThumbnailPath;
     static Font _font;
 
     // ── Input state ───────────────────────────────────────────────────────────
@@ -111,6 +127,8 @@ public class VRFileBrowser : MonoBehaviour
         public string name;
         public string path;
         public bool isDir;
+        public bool isAnimation; // folder containing 2+ splat files
+        public int animFrameCount; // number of splat files in animation folder
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -435,6 +453,51 @@ public class VRFileBrowser : MonoBehaviour
         UpdateHelpText();
     }
 
+    void StartMovieModeFromFolder(string folderPath)
+    {
+        if (cycler == null) return;
+
+        cycler.splatFolder = folderPath;
+        cycler.ScanFolder();
+
+        if (cycler.Files.Count == 0)
+        {
+            Debug.LogWarning($"[VRFileBrowser] No splat files in animation folder: {folderPath}");
+            return;
+        }
+
+        var (fits, estMB, availMB) = cycler.CheckMovieFit();
+        if (!fits)
+        {
+            Debug.LogError($"[VRFileBrowser] Animation: not enough RAM! Need ~{estMB}MB, available ~{availMB}MB");
+            _pathText.text = $"Not enough RAM! Need ~{estMB}MB, have ~{availMB}MB";
+            _pathText.color = new Color(1f, 0.3f, 0.3f);
+            return;
+        }
+
+        _movieLoadedCount = 0;
+        _movieTotalCount = cycler.Files.Count;
+        _movieState = MovieState.Loading;
+
+        bool started = cycler.BeginMovieLoad((loaded, total) =>
+        {
+            _movieLoadedCount = loaded;
+            _movieTotalCount = total;
+        });
+
+        if (!started)
+        {
+            _movieState = MovieState.Idle;
+            Debug.LogError("[VRFileBrowser] Failed to start animation loading");
+        }
+        else
+        {
+            Debug.Log($"[VRFileBrowser] Animation loading started from {Path.GetFileName(folderPath)}: {_movieTotalCount} frames (~{estMB}MB)");
+        }
+
+        UpdateHelpText();
+    }
+
     void StopMovieMode()
     {
         if (cycler != null)
@@ -488,11 +551,14 @@ public class VRFileBrowser : MonoBehaviour
                 foreach (var dir in Directory.GetDirectories(_currentPath)
                     .OrderBy(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase))
                 {
+                    int splatCount = CountSplatFiles(dir);
                     _entries.Add(new Entry
                     {
                         name = Path.GetFileName(dir),
                         path = dir,
-                        isDir = true
+                        isDir = true,
+                        isAnimation = splatCount >= 2,
+                        animFrameCount = splatCount
                     });
                 }
 
@@ -522,12 +588,42 @@ public class VRFileBrowser : MonoBehaviour
         UpdateRows();
     }
 
+    /// <summary>Count splat files in a directory (non-recursive). Caps at 9999 to avoid slow scans.</summary>
+    static int CountSplatFiles(string dirPath)
+    {
+        try
+        {
+            int count = 0;
+            foreach (var f in Directory.EnumerateFiles(dirPath))
+            {
+                if (RuntimeSplatLoader.IsSupportedFileExtension(f))
+                {
+                    count++;
+                    if (count >= 9999) break;
+                }
+            }
+            return count;
+        }
+        catch { return 0; }
+    }
+
     void SelectCurrent()
     {
         if (_sel < 0 || _sel >= _entries.Count) return;
         var entry = _entries[_sel];
 
-        if (entry.isDir)
+        if (entry.isDir && entry.isAnimation)
+        {
+            // Animation folder — start movie mode from this folder
+            if (_movieState != MovieState.Idle)
+                StopMovieMode();
+
+            if (worldGrab != null)
+                worldGrab.ResetWorld();
+
+            StartMovieModeFromFolder(entry.path);
+        }
+        else if (entry.isDir)
         {
             Navigate(entry.path); // null path → drive list
         }
@@ -636,39 +732,77 @@ public class VRFileBrowser : MonoBehaviour
         // ── Layout from top down ──
         float y = -PAD;
 
-        // Path bar
+        // Path bar (full width)
         _pathText = MakeText(bg.transform, "Path", "", FONT_PATH, COL_PATH,
             PAD + 4, y, CW - PAD * 2 - 8, PATH_H);
         y -= PATH_H;
 
-        // Separator
+        // Horizontal separator under path
         var sep = MakeChild(bg.transform, "Sep");
         sep.AddComponent<Image>().color = new Color(1f, 1f, 1f, 0.15f);
         SetRect(sep, PAD, y, CW - PAD * 2, 1);
         y -= 4;
 
-        // Entry rows
+        float contentY = y; // remember where content starts
+
+        // ── Left side: navigation rows ──
         _rowBgs  = new Image[ROWS];
         _rowTexts = new Text[ROWS];
+        float rowY = contentY;
         for (int i = 0; i < ROWS; i++)
         {
             var rowBg = MakeChild(bg.transform, $"RowBg{i}");
             _rowBgs[i] = rowBg.AddComponent<Image>();
             _rowBgs[i].color = COL_CLEAR;
-            SetRect(rowBg, PAD, y, CW - PAD * 2, ROW_H);
+            SetRect(rowBg, PAD, rowY, NAV_W - PAD, ROW_H);
 
             _rowTexts[i] = MakeText(bg.transform, $"Row{i}", "", FONT_ENTRY, COL_FILE,
-                PAD + 12, y, CW - PAD * 2 - 24, ROW_H);
-            y -= ROW_H;
+                PAD + 8, rowY, NAV_W - PAD - 16, ROW_H);
+            rowY -= ROW_H;
         }
 
-        // Hint bar at bottom
-        y -= 4;
-        string vr   = "[L/R Stick] Navigate    [L/R Trigger or A] Select    [B] Back    [Y] Close";
+        // Vertical separator between nav and preview
+        float sepHeight = ROWS * ROW_H;
+        var vSep = MakeChild(bg.transform, "VSep");
+        vSep.AddComponent<Image>().color = new Color(1f, 1f, 1f, 0.10f);
+        SetRect(vSep, SEP_X, contentY, 1, sepHeight);
+
+        // ── Right side: preview panel ──
+        _previewPanel = MakeChild(bg.transform, "PreviewPanel");
+        var previewBg = _previewPanel.AddComponent<Image>();
+        previewBg.color = COL_PREVIEW_BG;
+        SetRect(_previewPanel, PREVIEW_X, contentY, PREVIEW_W, sepHeight);
+
+        // Thumbnail image (centered in preview, with padding)
+        int thumbPad = 16;
+        int thumbW = PREVIEW_W - thumbPad * 2;
+        int thumbH = (int)(sepHeight) - 80 - thumbPad * 2; // leave room for name text below
+        var thumbGo = MakeChild(_previewPanel.transform, "Thumb");
+        _thumbnailImage = thumbGo.AddComponent<RawImage>();
+        _thumbnailImage.color = Color.white;
+        SetRect(thumbGo, thumbPad, -thumbPad, thumbW, thumbH);
+        _thumbnailImage.enabled = false;
+
+        // Play icon overlay (large ▶ centered in preview, for animation folders)
+        _previewPlayIcon = MakeText(_previewPanel.transform, "PlayIcon", "\u25B6",
+            120, COL_ANIM, 0, -thumbPad, PREVIEW_W, thumbH, TextAnchor.MiddleCenter);
+        _previewPlayIcon.enabled = false;
+
+        // File/folder name text below thumbnail
+        float nameY = -(thumbPad + thumbH + 8);
+        _previewNameText = MakeText(_previewPanel.transform, "PreviewName", "",
+            FONT_ENTRY, COL_FILE, thumbPad, nameY, thumbW, 60, TextAnchor.UpperCenter);
+        _previewNameText.horizontalOverflow = HorizontalWrapMode.Wrap;
+        _previewNameText.verticalOverflow = VerticalWrapMode.Truncate;
+
+        // Hint bar at bottom (full width)
+        float hintY = contentY - sepHeight - 4;
+        string vr   = "[L/R Stick] Navigate    [Trigger/A] Select    [B] Back    [Y] Close";
         string desk  = "[Arrows] Navigate    [Enter] Select    [Backspace] Back    [Esc/Tab] Close";
         _hintText = MakeText(bg.transform, "Hint", XRSettings.isDeviceActive ? vr : desk,
-            FONT_HINT, COL_HINT, PAD, y, CW - PAD * 2, HINT_H, TextAnchor.MiddleCenter);
+            FONT_HINT, COL_HINT, PAD, hintY, CW - PAD * 2, HINT_H, TextAnchor.MiddleCenter);
 
+        // Help panel (to the right of the main panel)
         var helpPanel = MakeChild(_root.transform, "HelpPanel");
         var helpBg = helpPanel.AddComponent<Image>();
         helpBg.color = new Color(0.05f, 0.05f, 0.07f, 0.92f);
@@ -679,18 +813,6 @@ public class VRFileBrowser : MonoBehaviour
         _helpText.horizontalOverflow = HorizontalWrapMode.Wrap;
         _helpText.verticalOverflow = VerticalWrapMode.Overflow;
         UpdateHelpText();
-
-        // Thumbnail panel (below help panel)
-        var thumbPanel = MakeChild(_root.transform, "ThumbPanel");
-        var thumbBg = thumbPanel.AddComponent<Image>();
-        thumbBg.color = new Color(0.05f, 0.05f, 0.07f, 0.92f);
-        SetRect(thumbPanel, CW + 24, -PAD - 390, 340, 260);
-
-        var thumbGo = MakeChild(thumbPanel.transform, "Thumb");
-        _thumbnailImage = thumbGo.AddComponent<RawImage>();
-        _thumbnailImage.color = Color.white;
-        SetRect(thumbGo, 10, -10, 320, 240);
-        _thumbnailImage.enabled = false;
     }
 
     // ── UI Helpers ────────────────────────────────────────────────────────────
@@ -744,7 +866,7 @@ public class VRFileBrowser : MonoBehaviour
     {
         _pathText.text = string.IsNullOrEmpty(_currentPath)
             ? "Computer (Drives)"
-            : TruncatePath(_currentPath, 70);
+            : TruncatePath(_currentPath, 90);
         _pathText.color = COL_PATH; // reset color after error
     }
 
@@ -756,8 +878,26 @@ public class VRFileBrowser : MonoBehaviour
             if (idx < _entries.Count)
             {
                 var e = _entries[idx];
-                _rowTexts[i].text  = (e.isDir ? "\u25B6 " : "   ") + e.name;
-                _rowTexts[i].color = e.isDir ? COL_DIR : COL_FILE;
+                string prefix;
+                Color color;
+                if (e.isAnimation)
+                {
+                    prefix = "\u25B6 "; // ▶ play triangle for animation folders
+                    color = COL_ANIM;
+                }
+                else if (e.isDir)
+                {
+                    prefix = "\u25B8 "; // ▸ small triangle for regular folders
+                    color = COL_DIR;
+                }
+                else
+                {
+                    prefix = "  ";
+                    color = COL_FILE;
+                }
+
+                _rowTexts[i].text  = prefix + e.name;
+                _rowTexts[i].color = color;
 
                 if (idx == _sel)
                     _rowBgs[i].color = COL_SEL;
@@ -776,12 +916,14 @@ public class VRFileBrowser : MonoBehaviour
         // Update hint with item count
         int dirs  = _entries.Count(e => e.isDir) - (string.IsNullOrEmpty(_currentPath) ? 0 : 1);
         int files = _entries.Count(e => !e.isDir);
+        int anims = _entries.Count(e => e.isAnimation);
         string countInfo = $"{dirs} folder(s), {files} file(s)";
+        if (anims > 0) countInfo += $", {anims} anim";
         if (_entries.Count > 0)
             countInfo += $"   [{_sel + 1}/{_entries.Count}]";
 
         string controls = XRSettings.isDeviceActive
-            ? "[L/R Stick] Navigate    [L/R Trigger or A] Select    [B] Back    [Y] Close"
+            ? "[Stick] Navigate    [Trigger/A] Select    [B] Back    [Y] Close"
             : "[Arrows] Navigate    [Enter] Select    [Backspace] Back    [Esc/Tab] Close";
 
         string movieInfo = "";
@@ -795,7 +937,7 @@ public class VRFileBrowser : MonoBehaviour
 
         _hintText.text = $"{countInfo}\n{controls}{movieInfo}";
         UpdateHelpText();
-        UpdateThumbnail();
+        UpdatePreview();
     }
 
     void UpdateHelpText()
@@ -866,21 +1008,64 @@ public class VRFileBrowser : MonoBehaviour
             + movieStatus;
     }
 
-    void UpdateThumbnail()
+    void UpdatePreview()
     {
         if (_thumbnailImage == null) return;
 
-        if (_sel < 0 || _sel >= _entries.Count || _entries[_sel].isDir)
+        // Default: hide everything
+        _thumbnailImage.enabled = false;
+        _previewPlayIcon.enabled = false;
+        _previewNameText.text = "";
+
+        if (_sel < 0 || _sel >= _entries.Count)
+            return;
+
+        var entry = _entries[_sel];
+
+        // Animation folder: show ▶ icon + folder name + frame count
+        if (entry.isAnimation)
         {
-            _thumbnailImage.enabled = false;
+            _previewPlayIcon.enabled = true;
+            _previewNameText.text = $"{entry.name}\n{entry.animFrameCount} frames";
+            _previewNameText.color = COL_ANIM;
+
+            // Check for a folder thumbnail (folder_name.jpg in parent)
+            if (TryLoadThumbnail(entry.path, isFolder: true))
+                _previewPlayIcon.enabled = false; // hide icon if we have a real image
             return;
         }
 
-        string splatPath = _entries[_sel].path;
-        string baseName = Path.GetFileNameWithoutExtension(splatPath);
-        string dir = Path.GetDirectoryName(splatPath);
+        // Regular folder: show folder name
+        if (entry.isDir)
+        {
+            _previewNameText.text = entry.name;
+            _previewNameText.color = COL_DIR;
+            return;
+        }
 
-        // Look for matching image: .jpg, .jpeg, .png
+        // Splat file: try to load matching thumbnail
+        _previewNameText.color = COL_FILE;
+        if (TryLoadThumbnail(entry.path, isFolder: false))
+        {
+            // Thumbnail loaded — show filename below
+            _previewNameText.text = entry.name;
+        }
+        else
+        {
+            // No thumbnail — show filename as placeholder
+            _previewNameText.text = entry.name;
+            _previewNameText.color = COL_HINT;
+        }
+    }
+
+    /// <summary>Try to load a thumbnail for the given path. Returns true if loaded.</summary>
+    bool TryLoadThumbnail(string itemPath, bool isFolder)
+    {
+        string baseName = isFolder ? Path.GetFileName(itemPath) : Path.GetFileNameWithoutExtension(itemPath);
+        string dir = isFolder ? Path.GetDirectoryName(itemPath) : Path.GetDirectoryName(itemPath);
+        if (string.IsNullOrEmpty(dir)) return false;
+
+        // Look for matching image: .jpg, .jpeg, .png (case-insensitive via both cases)
         string imgPath = null;
         string[] exts = { ".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG" };
         foreach (string ext in exts)
@@ -894,9 +1079,13 @@ public class VRFileBrowser : MonoBehaviour
         }
 
         if (imgPath == null)
+            return false;
+
+        // Skip re-loading if it's the same image
+        if (imgPath == _lastThumbnailPath && _thumbnailImage.texture != null)
         {
-            _thumbnailImage.enabled = false;
-            return;
+            _thumbnailImage.enabled = true;
+            return true;
         }
 
         try
@@ -908,16 +1097,13 @@ public class VRFileBrowser : MonoBehaviour
             {
                 _thumbnailImage.texture = _thumbnailTex;
                 _thumbnailImage.enabled = true;
-            }
-            else
-            {
-                _thumbnailImage.enabled = false;
+                _lastThumbnailPath = imgPath;
+                return true;
             }
         }
-        catch
-        {
-            _thumbnailImage.enabled = false;
-        }
+        catch { /* ignore read errors */ }
+
+        return false;
     }
 
     void EnsureVisible()
