@@ -31,6 +31,16 @@ public class WorldGrabManipulator : MonoBehaviour
     [Tooltip("Trigger value above which rotation begins.")]
     [Range(0f, 1f)] public float triggerThreshold = 0.5f;
 
+    [Header("Haptics")]
+    [Tooltip("Vibration amplitude when grab/rotate starts (0 = off).")]
+    [Range(0f, 1f)] public float hapticAmplitude = 0.3f;
+
+    [Tooltip("Duration in seconds of the initial haptic pulse.")]
+    [Range(0.01f, 0.5f)] public float hapticDuration = 0.08f;
+
+    [Tooltip("Continuous haptic amplitude during active manipulation (0 = off).")]
+    [Range(0f, 0.5f)] public float hapticContinuousAmplitude = 0.05f;
+
     [Header("Smoothing")]
     [Tooltip("Scales hand rotation before applying. Lower = slower/heavier feel.")]
     [Range(0.05f, 1f)] public float rotationScale = 1f;
@@ -130,6 +140,11 @@ public class WorldGrabManipulator : MonoBehaviour
                 IsGrabbing = true;
                 _grabHandStartPos = handPos;
                 _grabWorldStartPos = worldRoot.position;
+                SendHaptic(XRNode.RightHand, hapticAmplitude, hapticDuration);
+            }
+            else if (hapticContinuousAmplitude > 0f)
+            {
+                SendHaptic(XRNode.RightHand, hapticContinuousAmplitude, Time.deltaTime);
             }
 
             // Delta between current hand position and start, applied to world
@@ -162,6 +177,11 @@ public class WorldGrabManipulator : MonoBehaviour
                 _prevFilteredPos = handPos;
                 _angularVelocity = Vector3.zero;
                 _linearVelocity = Vector3.zero;
+                SendHaptic(XRNode.RightHand, hapticAmplitude, hapticDuration);
+            }
+            else if (hapticContinuousAmplitude > 0f)
+            {
+                SendHaptic(XRNode.RightHand, hapticContinuousAmplitude, Time.deltaTime);
             }
 
             // ── Filter hand input (EMA) to reduce jitter ──────────────────
@@ -277,6 +297,15 @@ public class WorldGrabManipulator : MonoBehaviour
     }
 
     // ── XR Helpers ───────────────────────────────────────────────────────────
+
+    static void SendHaptic(XRNode node, float amplitude, float duration)
+    {
+        if (amplitude <= 0f) return;
+        var devices = new List<InputDevice>();
+        InputDevices.GetDevicesAtXRNode(node, devices);
+        if (devices.Count > 0)
+            devices[0].SendHapticImpulse(0, amplitude, duration);
+    }
 
     static float ReadAxis(XRNode node, InputFeatureUsage<float> usage)
     {

@@ -186,12 +186,38 @@ public class SplatCycler : MonoBehaviour
         string path = _files[index];
         Debug.Log($"[SplatCycler] Loading [{index + 1}/{_files.Count}]: {Path.GetFileName(path)}");
 
-        if (loader.LoadFile(path))
+        // Pre-flight RAM check
+        long estimatedBytes = RuntimeSplatLoader.EstimateAssetBytes(path);
+        long availableBytes = (long)SystemInfo.systemMemorySize * 1024L * 1024L * 80L / 100L;
+        if (estimatedBytes > availableBytes)
         {
-            _currentIndex = index;
-            _currentFile = Path.GetFileName(path);
-            RefreshPreloadWindow();
-            if (_rig != null) _rig.ResetToSpawnPoint(loader != null ? loader.targetRenderer : null);
+            long estMB = estimatedBytes / (1024 * 1024);
+            long availMB = availableBytes / (1024 * 1024);
+            Debug.LogWarning($"[SplatCycler] File may exceed available RAM: ~{estMB}MB needed, ~{availMB}MB available for {Path.GetFileName(path)}");
+        }
+
+        try
+        {
+            if (loader.LoadFile(path))
+            {
+                _currentIndex = index;
+                _currentFile = Path.GetFileName(path);
+                RefreshPreloadWindow();
+                if (_rig != null) _rig.ResetToSpawnPoint(loader != null ? loader.targetRenderer : null);
+            }
+            else
+            {
+                Debug.LogError($"[SplatCycler] Failed to load: {Path.GetFileName(path)}");
+            }
+        }
+        catch (OutOfMemoryException)
+        {
+            Debug.LogError($"[SplatCycler] Out of memory loading {Path.GetFileName(path)}");
+            System.GC.Collect();
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[SplatCycler] Error loading {Path.GetFileName(path)}: {ex.Message}");
         }
     }
 
