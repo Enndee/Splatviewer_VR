@@ -42,6 +42,7 @@ float4x4 _MatrixWorldToObject;
 float4x4 _MatrixMV;
 float4 _VecScreenParams;
 float4 _VecWorldSpaceCameraPos;
+float _CameraNearPlane;
 int _SelectionMode;
 
 RWStructuredBuffer<uint> _SplatSortDistances;
@@ -197,7 +198,8 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
     SplatViewData view = (SplatViewData)0;
     
     float3 centerWorldPos = mul(_MatrixObjectToWorld, float4(splat.pos,1)).xyz;
-    float4 centerClipPos = mul(UNITY_MATRIX_VP, float4(centerWorldPos, 1));
+    float3 centerViewPos = mul(_MatrixMV, float4(splat.pos, 1)).xyz;
+    float4 centerClipPos = mul(UNITY_MATRIX_P, float4(centerViewPos, 1));
     half opacityScale = _SplatOpacityScale;
     float splatScale = _SplatScale;
 
@@ -219,10 +221,12 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
         centerClipPos.w = 0;
     }
 
-    view.pos = centerClipPos;
     bool behindCam = centerClipPos.w <= 0;
     if (!behindCam)
     {
+        float minViewDepth = -max(_CameraNearPlane, 1e-4);
+        view.pos = centerClipPos;
+
         float4 boxRot = splat.rot;
         float3 boxSize = splat.scale;
 
@@ -233,7 +237,7 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
         float splatScale2 = splatScale * splatScale;
         cov3d0 *= splatScale2;
         cov3d1 *= splatScale2;
-        float3 cov2d = CalcCovariance2D(splat.pos, cov3d0, cov3d1, _MatrixMV, UNITY_MATRIX_P, _VecScreenParams);
+        float3 cov2d = CalcCovariance2D(splat.pos, cov3d0, cov3d1, _MatrixMV, UNITY_MATRIX_P, _VecScreenParams, minViewDepth);
         
         DecomposeCovariance(cov2d, view.axis1, view.axis2);
 
@@ -246,6 +250,10 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
         col.a = min(splat.opacity * opacityScale, 65000);
         view.color.x = (f32tof16(col.r) << 16) | f32tof16(col.g);
         view.color.y = (f32tof16(col.b) << 16) | f32tof16(col.a);
+    }
+    else
+    {
+        view.pos = centerClipPos;
     }
     
     _SplatViewData[idx] = view;

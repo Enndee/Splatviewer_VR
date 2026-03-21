@@ -140,13 +140,7 @@ internal static class PlayCanvasSogReader
         if (ext != ".webp")
             throw new Exception($"SOG image {fileName} uses unsupported runtime format {ext}. Only lossless WebP is currently supported.");
 
-        int width;
-        int height;
-        Texture2DExt.GetWebPDimensions(bytes, out width, out height);
-        Error error;
-        byte[] rgba = Texture2DExt.LoadRGBAFromWebP(bytes, ref width, ref height, false, out error);
-        if (error != Error.Success || rgba == null)
-            throw new Exception($"Failed to decode WebP image {fileName}: {error}");
+        byte[] rgba = RuntimeSplatLoader.DecodeWebPImage(bytes, out int width, out int height, fileName);
 
         return new DecodedImage(width, height, rgba);
     }

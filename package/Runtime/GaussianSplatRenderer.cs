@@ -302,6 +302,9 @@ namespace GaussianSplatting.Runtime
         GpuSorting m_Sorter;
         GpuSorting.Args m_SorterArgs;
 
+        uint m_CalcViewGroupSize;
+        uint m_CalcDistGroupSize;
+
         internal Material m_MatSplats;
         internal Material m_MatSplatsOpaque;
         internal Material m_MatComposite;
@@ -355,6 +358,7 @@ namespace GaussianSplatting.Runtime
             public static readonly int MatrixWorldToObject = Shader.PropertyToID("_MatrixWorldToObject");
             public static readonly int VecScreenParams = Shader.PropertyToID("_VecScreenParams");
             public static readonly int VecWorldSpaceCameraPos = Shader.PropertyToID("_VecWorldSpaceCameraPos");
+            public static readonly int CameraNearPlane = Shader.PropertyToID("_CameraNearPlane");
             public static readonly int CameraTargetTexture = Shader.PropertyToID("_CameraTargetTexture");
             public static readonly int SelectionCenter = Shader.PropertyToID("_SelectionCenter");
             public static readonly int SelectionDelta = Shader.PropertyToID("_SelectionDelta");
@@ -454,6 +458,9 @@ namespace GaussianSplatting.Runtime
             });
 
             InitSortBuffers(splatCount);
+
+            m_CSSplatUtilities.GetKernelThreadGroupSizes((int)KernelIndices.CalcViewData, out m_CalcViewGroupSize, out _, out _);
+            m_CSSplatUtilities.GetKernelThreadGroupSizes((int)KernelIndices.CalcDistances, out m_CalcDistGroupSize, out _, out _);
         }
 
         void InitSortBuffers(int count)
@@ -680,13 +687,13 @@ namespace GaussianSplatting.Runtime
 
             cmb.SetComputeVectorParam(m_CSSplatUtilities, Props.VecScreenParams, screenPar);
             cmb.SetComputeVectorParam(m_CSSplatUtilities, Props.VecWorldSpaceCameraPos, camPos);
+            cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.CameraNearPlane, cam.nearClipPlane);
             cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.SplatScale, m_SplatScale);
             cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.SplatOpacityScale, m_OpacityScale);
             cmb.SetComputeIntParam(m_CSSplatUtilities, Props.SHOrder, m_SHOrder);
             cmb.SetComputeIntParam(m_CSSplatUtilities, Props.SHOnly, m_SHOnly ? 1 : 0);
 
-            m_CSSplatUtilities.GetKernelThreadGroupSizes((int)KernelIndices.CalcViewData, out uint gsX, out _, out _);
-            cmb.DispatchCompute(m_CSSplatUtilities, (int)KernelIndices.CalcViewData, (m_GpuView.count + (int)gsX - 1)/(int)gsX, 1, 1);
+            cmb.DispatchCompute(m_CSSplatUtilities, (int)KernelIndices.CalcViewData, (m_GpuView.count + (int)m_CalcViewGroupSize - 1)/(int)m_CalcViewGroupSize, 1, 1);
         }
 
         internal void SortPoints(CommandBuffer cmd, Camera cam, Matrix4x4 matrix)
@@ -709,8 +716,7 @@ namespace GaussianSplatting.Runtime
             cmd.SetComputeMatrixParam(m_CSSplatUtilities, Props.MatrixMV, worldToCamMatrix * matrix);
             cmd.SetComputeIntParam(m_CSSplatUtilities, Props.SplatCount, m_SplatCount);
             cmd.SetComputeIntParam(m_CSSplatUtilities, Props.SplatChunkCount, m_GpuChunksValid ? m_GpuChunks.count : 0);
-            m_CSSplatUtilities.GetKernelThreadGroupSizes((int)KernelIndices.CalcDistances, out uint gsX, out _, out _);
-            cmd.DispatchCompute(m_CSSplatUtilities, (int)KernelIndices.CalcDistances, (m_GpuSortDistances.count + (int)gsX - 1)/(int)gsX, 1, 1);
+            cmd.DispatchCompute(m_CSSplatUtilities, (int)KernelIndices.CalcDistances, (m_GpuSortDistances.count + (int)m_CalcDistGroupSize - 1)/(int)m_CalcDistGroupSize, 1, 1);
 
             // sort the splats
             EnsureSorterAndRegister();
@@ -823,7 +829,15 @@ namespace GaussianSplatting.Runtime
         {
             int bufferSize = m_Cutouts?.Length ?? 0;
             if (bufferSize == 0)
-                bufferSize = 1;
+            {
+                // No cutouts: ensure a 1-element dummy buffer exists, then skip upload
+                if (m_GpuEditCutouts == null || m_GpuEditCutouts.count != 1)
+                {
+                    m_GpuEditCutouts?.Dispose();
+                    m_GpuEditCutouts = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, UnsafeUtility.SizeOf<GaussianCutout.ShaderData>()) { name = "GaussianCutouts" };
+                }
+                return;
+            }
             if (m_GpuEditCutouts == null || m_GpuEditCutouts.count != bufferSize)
             {
                 m_GpuEditCutouts?.Dispose();

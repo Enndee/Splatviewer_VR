@@ -273,12 +273,7 @@ internal static class SpxReader
             Buffer.BlockCopy(data, off, webpBytes, 0, len);
             off += len;
 
-            int w = 0, h = 0;
-            Texture2DExt.GetWebPDimensions(webpBytes, out w, out h);
-            Error error;
-            byte[] rgba = Texture2DExt.LoadRGBAFromWebP(webpBytes, ref w, ref h, false, out error);
-            if (error != Error.Success || rgba == null)
-                throw new Exception($"SPX format 220: failed to decode WebP section {sec}: {error}");
+            byte[] rgba = RuntimeSplatLoader.DecodeWebPImage(webpBytes, out int w, out int h, $"SPX section {sec}");
             FlipRows(rgba, w, h); // Undo bottom-to-top row order from WebP decoder
             sections[sec] = rgba;
         }
@@ -398,11 +393,7 @@ internal static class SpxReader
         byte[] webpBytes = new byte[webpLen];
         Buffer.BlockCopy(data, off, webpBytes, 0, webpLen);
 
-        int w = 0, h = 0;
-        Texture2DExt.GetWebPDimensions(webpBytes, out w, out h);
-        Error error;
-        byte[] rgba = Texture2DExt.LoadRGBAFromWebP(webpBytes, ref w, ref h, false, out error);
-        if (error != Error.Success || rgba == null) return null;
+        byte[] rgba = RuntimeSplatLoader.DecodeWebPImage(webpBytes, out int w, out int h, "SPX SH palette");
         FlipRows(rgba, w, h);
 
         int totalPixels = w * h;

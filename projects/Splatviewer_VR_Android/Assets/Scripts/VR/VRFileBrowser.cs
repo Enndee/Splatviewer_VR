@@ -203,12 +203,16 @@ public class VRFileBrowser : MonoBehaviour
                 _movieBtnReady = true;
         }
 
+        // Block toggle while options menu is open
+        var optMenu = FindAnyObjectByType<VROptionsMenu>();
+        bool optionsOpen = optMenu != null && optMenu.IsOpen;
+
         // Toggle: left Y button or Esc/Tab key on desktop
         bool yBtn = ReadButton(XRNode.LeftHand, CommonUsages.secondaryButton);
-        if (yBtn && _toggleReady) { ToggleBrowser(); _toggleReady = false; }
+        if (yBtn && _toggleReady && !optionsOpen) { ToggleBrowser(); _toggleReady = false; }
         else if (!yBtn) _toggleReady = true;
 
-        if (!XRSettings.isDeviceActive
+        if (!XRSettings.isDeviceActive && !optionsOpen
             && (Input.GetKeyDown(KeyCode.Escape) || Input.GetKeyDown(KeyCode.Tab)))
             ToggleBrowser();
 
@@ -236,7 +240,7 @@ public class VRFileBrowser : MonoBehaviour
         if (IsOpen)
         {
             PositionInFront();
-            Navigate(_currentPath);
+            Navigate(GetPreferredOpenPath());
         }
 
         if (!XRSettings.isDeviceActive)
@@ -244,6 +248,19 @@ public class VRFileBrowser : MonoBehaviour
             Cursor.lockState = IsOpen ? CursorLockMode.None : CursorLockMode.Locked;
             Cursor.visible = IsOpen;
         }
+    }
+
+    string GetPreferredOpenPath()
+    {
+        string currentFilePath = loader != null ? loader.CurrentFilePath : null;
+        if (!string.IsNullOrWhiteSpace(currentFilePath))
+        {
+            string currentFileDir = Path.GetDirectoryName(currentFilePath);
+            if (!string.IsNullOrWhiteSpace(currentFileDir) && QuestSplatStorage.IsInsideRoot(currentFileDir))
+                return currentFileDir;
+        }
+
+        return _currentPath;
     }
 
     // ── Input Handling ────────────────────────────────────────────────────────
@@ -519,9 +536,34 @@ public class VRFileBrowser : MonoBehaviour
             Debug.LogWarning($"[VRFileBrowser] Cannot list {_currentPath}: {ex.Message}");
         }
 
+        FocusCurrentFileEntry();
+
         UpdatePath();
         UpdateRows();
         RefreshBrowserPreload();
+    }
+
+    void FocusCurrentFileEntry()
+    {
+        string currentFilePath = loader != null ? loader.CurrentFilePath : null;
+        if (string.IsNullOrWhiteSpace(currentFilePath))
+            return;
+
+        for (int i = 0; i < _entries.Count; i++)
+        {
+            if (_entries[i].isDir || !PathsEqual(_entries[i].path, currentFilePath))
+                continue;
+
+            _sel = i;
+            CenterSelection();
+            return;
+        }
+    }
+
+    void CenterSelection()
+    {
+        int maxScroll = Mathf.Max(0, _entries.Count - ROWS);
+        _scroll = Mathf.Clamp(_sel - ROWS / 2, 0, maxScroll);
     }
 
     void SelectCurrent()
@@ -798,6 +840,7 @@ public class VRFileBrowser : MonoBehaviour
             + "L-Grip + R-Stick: rotate splat\n"
             + "L-Grip + X: flip\n"
             + "L-Grip + A: reset rotation\n\n"
+            + "Options: R-Grip + Y\n\n"
             + $"FPS: {_displayFps:F1}\n"
             + preloadStatus + "\n"
             + movieStatus
@@ -821,6 +864,7 @@ public class VRFileBrowser : MonoBehaviour
             + "R / F: next / previous splat\n"
             + "Q / E: rotate splat\n"
             + "Home: reset    End: flip\n\n"
+            + "Options: O key\n\n"
             + $"FPS: {_displayFps:F1}\n"
             + preloadStatus + "\n"
             + movieStatus;

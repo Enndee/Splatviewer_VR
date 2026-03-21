@@ -60,14 +60,16 @@ public class VRRig : MonoBehaviour
     /// <summary>True when an XR device (HMD) is active and tracking.</summary>
     public bool IsVRActive => XRSettings.isDeviceActive;
 
+    static readonly List<InputDevice> s_devices = new(2);
+
     /// <summary>World-space position of the HMD (or main camera position as fallback).</summary>
     public Vector3 HeadPosition
     {
         get
         {
-            var devices = new List<InputDevice>();
-            InputDevices.GetDevicesAtXRNode(XRNode.Head, devices);
-            if (devices.Count > 0 && devices[0].TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 pos))
+            s_devices.Clear();
+            InputDevices.GetDevicesAtXRNode(XRNode.Head, s_devices);
+            if (s_devices.Count > 0 && s_devices[0].TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 pos))
                 return transform.TransformPoint(pos);
             return xrCamera != null ? xrCamera.transform.position : transform.position;
         }

@@ -53,10 +53,11 @@ void CalcCovariance3D(float3x3 rotMat, out float3 sigma0, out float3 sigma1)
 }
 
 // from "EWA Splatting" (Zwicker et al 2002) eq. 31
-float3 CalcCovariance2D(float3 worldPos, float3 cov3d0, float3 cov3d1, float4x4 matrixV, float4x4 matrixP, float4 screenParams)
+float3 CalcCovariance2D(float3 worldPos, float3 cov3d0, float3 cov3d1, float4x4 matrixV, float4x4 matrixP, float4 screenParams, float minViewDepth)
 {
     float4x4 viewMatrix = matrixV;
     float3 viewPos = mul(viewMatrix, float4(worldPos, 1)).xyz;
+    viewPos.z = min(viewPos.z, minViewDepth);
 
     // this is needed in order for splats that are visible in view but clipped "quite a lot" to work
     float aspect = matrixP._m00 / matrixP._m11;

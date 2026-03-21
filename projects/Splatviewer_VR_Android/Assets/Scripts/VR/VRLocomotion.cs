@@ -47,6 +47,9 @@ public class VRLocomotion : MonoBehaviour
     bool   _snapTurnReady = true;
     float  _mousePitch;   // accumulated vertical mouse look (desktop only)
     VRFileBrowser _browser;
+    VROptionsMenu _optionsMenu;
+
+    bool AnyMenuOpen => (_browser != null && _browser.IsOpen) || (_optionsMenu != null && _optionsMenu.IsOpen);
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -54,6 +57,7 @@ public class VRLocomotion : MonoBehaviour
     {
         _rig = GetComponent<VRRig>();
         _browser = FindAnyObjectByType<VRFileBrowser>();
+        _optionsMenu = FindAnyObjectByType<VROptionsMenu>();
 
         if (XRSettings.isDeviceActive)
             SyncDesktopPitchFromCamera();
@@ -104,7 +108,8 @@ public class VRLocomotion : MonoBehaviour
 
     void VRMove()
     {
-        if (_browser != null && _browser.IsOpen) return;
+        if (_optionsMenu == null) _optionsMenu = FindAnyObjectByType<VROptionsMenu>();
+        if (AnyMenuOpen) return;
 
         Vector2 leftStick = ReadStick(XRNode.LeftHand);
         if (leftStick.magnitude <= stickDeadzone)
@@ -131,8 +136,8 @@ public class VRLocomotion : MonoBehaviour
 
     void VRSnapTurn()
     {
-        // Right stick is used by file browser when open
-        if (_browser != null && _browser.IsOpen) return;
+        // Right stick is used by file browser / options menu when open
+        if (AnyMenuOpen) return;
 
         Vector2 rightStick = ReadStick(XRNode.RightHand);
 
@@ -157,6 +162,9 @@ public class VRLocomotion : MonoBehaviour
     void KeyboardMouseFallback()
     {
         if (_browser != null && (_browser.IsOpen || _browser.WasOpenThisFrame))
+            return;
+        if (_optionsMenu == null) _optionsMenu = FindAnyObjectByType<VROptionsMenu>();
+        if (_optionsMenu != null && _optionsMenu.IsOpen)
             return;
 
         UpdateDesktopCursorState();

@@ -327,21 +327,23 @@ public class SplatCycler : MonoBehaviour
 
     // ── Input Handling ────────────────────────────────────────────────────────
 
+    static readonly List<InputDevice> s_devices = new(2);
+
     void HandleVRInput()
     {
         // Don't consume A/B when file browser is open (or just closed this frame)
         if (_browser != null && (_browser.IsOpen || _browser.WasOpenThisFrame)) return;
 
-        var devices = new List<InputDevice>();
-        InputDevices.GetDevicesAtXRNode(XRNode.RightHand, devices);
+        s_devices.Clear();
+        InputDevices.GetDevicesAtXRNode(XRNode.RightHand, s_devices);
 
         bool bPressed = false;
         bool aPressed = false;
 
-        if (devices.Count > 0)
+        if (s_devices.Count > 0)
         {
-            devices[0].TryGetFeatureValue(CommonUsages.secondaryButton, out bPressed); // B
-            devices[0].TryGetFeatureValue(CommonUsages.primaryButton, out aPressed);   // A
+            s_devices[0].TryGetFeatureValue(CommonUsages.secondaryButton, out bPressed); // B
+            s_devices[0].TryGetFeatureValue(CommonUsages.primaryButton, out aPressed);   // A
         }
 
         // B → next (with debounce)

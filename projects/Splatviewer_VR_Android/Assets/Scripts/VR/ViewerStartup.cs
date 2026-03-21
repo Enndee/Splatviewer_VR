@@ -13,17 +13,17 @@ using UnityEngine.XR;
 public sealed class ViewerStartup : MonoBehaviour
 {
     const float StartupDelaySeconds = 0.5f;
-    const float QuestRenderScale = 0.65f;
-    const float QuestFoveatedRenderingLevel = 1.0f;
+    const float QuestRenderScale = 0.80f;
+    const float QuestFoveatedRenderingLevel = 0f;
     const int QuestTargetFrameRate = 72;
     const int MaxDisplayOverrideFrames = 12;
     const GaussianSplatRenderer.SortMode QuestSortMode = GaussianSplatRenderer.SortMode.EveryNthFrame;
-    const int QuestSortNthFrame = 24;
-    const float QuestSortPositionThreshold = 0.03f;
-    const float QuestSortAngleThreshold = 5.0f;
+    const int QuestSortNthFrame = 12;
+    const float QuestSortPositionThreshold = 0.02f;
+    const float QuestSortAngleThreshold = 3.0f;
     const int QuestSortMaxFramesWithoutUpdate = 18;
     const float QuestAlphaClipThreshold = 6.0f / 255.0f;
-    const float QuestSplatEdgeSharpness = 1.4f;
+    const float QuestSplatEdgeSharpness = 1.6f;
     const bool QuestUseOpaqueSplatHack = false;
 
     static ViewerStartup s_instance;
@@ -59,10 +59,21 @@ public sealed class ViewerStartup : MonoBehaviour
         ApplyMobileSplatRendererOverrides();
         yield return ApplyMobileDisplayOverrides();
 
+        EnsureOptionsMenu();
+
         if (!string.IsNullOrEmpty(_pendingFilePath))
             TryAutoLoadLaunchFile(_pendingFilePath);
 
         InitializeDesktopCursorState();
+    }
+
+    static void EnsureOptionsMenu()
+    {
+        if (FindAnyObjectByType<VROptionsMenu>() != null)
+            return;
+        var go = new GameObject(nameof(VROptionsMenu));
+        DontDestroyOnLoad(go);
+        go.AddComponent<VROptionsMenu>();
     }
 
     static void ApplyWindowMode()
@@ -79,9 +90,9 @@ public sealed class ViewerStartup : MonoBehaviour
         Application.targetFrameRate = QuestTargetFrameRate;
         QualitySettings.vSyncCount = 0;
 
-        float renderScale = Mathf.Clamp(QuestRenderScale, 0.5f, 1f);
+        float renderScale = VROptionsMenu.LoadSavedFloat(VROptionsMenu.PrefKeyRenderScale, QuestRenderScale);
+        renderScale = Mathf.Clamp(renderScale, 0.5f, 1f);
         XRSettings.eyeTextureResolutionScale = renderScale;
-        ScalableBufferManager.ResizeBuffers(renderScale, renderScale);
     }
 
     static void ApplyMobileSplatRendererOverrides()
@@ -90,16 +101,20 @@ public sealed class ViewerStartup : MonoBehaviour
             return;
 
         GaussianSplatRenderer[] renderers = FindObjectsByType<GaussianSplatRenderer>(FindObjectsSortMode.None);
+        int savedSHOrder = (int)VROptionsMenu.LoadSavedFloat(VROptionsMenu.PrefKeySHOrder, -1);
+        int savedSortNth = (int)VROptionsMenu.LoadSavedFloat(VROptionsMenu.PrefKeySortNth, -1);
         foreach (GaussianSplatRenderer renderer in renderers)
         {
             renderer.m_SortMode = QuestSortMode;
-            renderer.m_SortNthFrame = QuestSortNthFrame;
+            renderer.m_SortNthFrame = savedSortNth > 0 ? savedSortNth : QuestSortNthFrame;
             renderer.m_SortPositionThreshold = QuestSortPositionThreshold;
             renderer.m_SortAngleThreshold = QuestSortAngleThreshold;
             renderer.m_SortMaxFramesWithoutUpdate = QuestSortMaxFramesWithoutUpdate;
             renderer.m_AlphaClipThreshold = QuestAlphaClipThreshold;
             renderer.m_SplatEdgeSharpness = QuestSplatEdgeSharpness;
             renderer.m_UseOpaqueRenderHack = QuestUseOpaqueSplatHack;
+            if (savedSHOrder >= 0)
+                renderer.m_SHOrder = savedSHOrder;
         }
 
         if (renderers.Length > 0)
@@ -125,7 +140,8 @@ public sealed class ViewerStartup : MonoBehaviour
                 continue;
 
             display.foveatedRenderingLevel = Mathf.Clamp01(QuestFoveatedRenderingLevel);
-            Debug.Log($"[ViewerStartup] XR display overrides applied. Foveated rendering level: {display.foveatedRenderingLevel:0.00}");
+            display.foveatedRenderingFlags = XRDisplaySubsystem.FoveatedRenderingFlags.None;
+            Debug.Log($"[ViewerStartup] XR display overrides applied. Fixed foveated rendering level: {display.foveatedRenderingLevel:0.00}");
             yield break;
         }
 

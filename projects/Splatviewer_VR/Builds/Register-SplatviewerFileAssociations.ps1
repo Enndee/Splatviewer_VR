@@ -8,8 +8,9 @@ $ErrorActionPreference = 'Stop'
 
 function Resolve-DefaultExecutablePath {
     $candidates = @(
-        (Join-Path (Get-Location) 'SplatViewer_VR.exe'),
-        (Join-Path $PSScriptRoot 'SplatViewer_VR.exe')
+        (Join-Path $PSScriptRoot 'SplatViewer_VR.exe'),
+        (Join-Path $PSScriptRoot '..\projects\Splatviewer_VR\Release\1.4\SplatViewer_VR.exe'),
+        (Join-Path $PSScriptRoot '..\projects\Splatviewer_VR\Release\1.3\SplatViewer_VR.exe')
     )
 
     foreach ($candidate in $candidates) {
@@ -19,7 +20,7 @@ function Resolve-DefaultExecutablePath {
         }
     }
 
-    throw 'Could not find SplatViewer_VR.exe in the current build folder. Pass -ExecutablePath explicitly.'
+    throw 'Could not find SplatViewer_VR.exe automatically. Pass -ExecutablePath explicitly.'
 }
 
 function Set-RegistryKeyDefaultValue {

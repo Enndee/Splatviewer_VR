@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using GaussianSplatting.Runtime;
 using Unity.Mathematics;
 using UnityEngine;
+using WebP;
 
 /// <summary>
 /// Loads .ply, .spz, .sog, and .spx Gaussian Splat files at runtime,
@@ -32,6 +33,9 @@ public class RuntimeSplatLoader : MonoBehaviour
 
     /// <summary>Total bytes currently used by preloaded assets in RAM.</summary>
     public long PreloadCachedBytes { get { lock (_preloadLock) return _preloadCachedBytes; } }
+
+    /// <summary>Absolute path of the currently loaded splat file, if any.</summary>
+    public string CurrentFilePath => _currentFilePath;
 
     /// <summary>Maximum bytes allowed for the preload cache (0 = unlimited).</summary>
     public long PreloadBudgetBytes { get { lock (_preloadLock) return _preloadBudgetBytes; } }
@@ -386,12 +390,13 @@ public class RuntimeSplatLoader : MonoBehaviour
         _movieLoadResults = new GaussianSplatAsset[files.Count];
         _movieLoadTasks = new Task<PreparedRuntimeAsset>[files.Count];
         _movieLoadStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        _movieLastError = null;
 
-        // Sliding window: limit concurrent decodes to avoid CPU/memory thrashing.
-        // Each decode (especially SOG/WebP) is very CPU + memory heavy,
-        // so more than ~8 simultaneous decodes causes severe cache thrashing.
-        _movieMaxConcurrency = Math.Min(16, Math.Max(1, Environment.ProcessorCount));
-        int initialBatch = Math.Min(_movieMaxConcurrency, files.Count);
+        _movieMaxConcurrency = DetermineMovieConcurrency(files);
+
+        // Pre-launch up to 2x concurrency so the thread-pool never starves
+        // while we wait for in-order finalization.
+        int initialBatch = Math.Min(_movieMaxConcurrency * 2, files.Count);
         for (int i = 0; i < initialBatch; i++)
             LaunchMovieTask(i);
         _movieLaunchNext = initialBatch;
@@ -434,8 +439,20 @@ public class RuntimeSplatLoader : MonoBehaviour
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[RuntimeSplatLoader] Movie load failed for frame {_movieLoadDone}: {ex.Message}");
-                _movieLoadFailed = true;
+                string failedPath = _movieLoadFiles[_movieLoadDone];
+                Debug.LogWarning($"[RuntimeSplatLoader] Movie worker failed for frame {_movieLoadDone} ({Path.GetFileName(failedPath)}): {ex.Message}. Retrying synchronously.");
+
+                try
+                {
+                    prepared = BuildPreparedRuntimeAsset(failedPath);
+                    Debug.Log($"[RuntimeSplatLoader] Movie retry succeeded for frame {_movieLoadDone} ({Path.GetFileName(failedPath)})");
+                }
+                catch (Exception retryEx)
+                {
+                    _movieLastError = $"{Path.GetFileName(failedPath)}: {retryEx.Message}";
+                    Debug.LogError($"[RuntimeSplatLoader] Movie load failed for frame {_movieLoadDone} ({Path.GetFileName(failedPath)}): {retryEx.Message}");
+                    _movieLoadFailed = true;
+                }
             }
 
             if (prepared != null && !_movieLoadFailed)
@@ -446,14 +463,21 @@ public class RuntimeSplatLoader : MonoBehaviour
             _movieLoadDone++;
             _movieLoadProgress?.Invoke(_movieLoadDone, _movieLoadTotal);
 
-            // Sliding window: launch next task to keep workers busy
-            if (!_movieLoadFailed && _movieLaunchNext < _movieLoadTotal)
+            if (_movieLoadFailed) break;
+        }
+
+        // Top-up the worker pool independently of finalization order.
+        // This avoids stalling launches when an early frame is slow but
+        // later frames have already completed.
+        if (!_movieLoadFailed)
+        {
+            int maxInFlight = _movieMaxConcurrency * 2;
+            while (_movieLaunchNext < _movieLoadTotal &&
+                   _movieLaunchNext - _movieLoadDone < maxInFlight)
             {
                 LaunchMovieTask(_movieLaunchNext);
                 _movieLaunchNext++;
             }
-
-            if (_movieLoadFailed) break;
         }
 
         if (_movieLoadFailed || _movieLoadDone >= _movieLoadTotal)
@@ -477,6 +501,8 @@ public class RuntimeSplatLoader : MonoBehaviour
                         Destroy(_movieLoadResults[i]);
                 }
                 _movieLoadResults = null;
+                if (!string.IsNullOrEmpty(_movieLastError))
+                    Debug.LogError($"[RuntimeSplatLoader] Movie load aborted: {_movieLastError}");
             }
 
             _movieLoadFiles = null;
@@ -521,6 +547,30 @@ public class RuntimeSplatLoader : MonoBehaviour
         _movieLoadTasks = null;
         _movieLoadResults = null;
         _movieLoadProgress = null;
+        _movieLastError = null;
+    }
+
+    public string MovieLastError => _movieLastError;
+
+    static int DetermineMovieConcurrency(IReadOnlyList<string> files)
+    {
+        // Use all available cores. The native WebP decoder is thread-safe
+        // for independent calls, and file I/O + morton + packing all
+        // benefit from full parallelism.
+        return Math.Max(2, Environment.ProcessorCount);
+    }
+
+    internal static byte[] DecodeWebPImage(byte[] webpBytes, out int width, out int height, string debugName)
+    {
+        // libwebp native decode is thread-safe for independent calls –
+        // each invocation allocates its own decoder, so no lock needed.
+        Texture2DExt.GetWebPDimensions(webpBytes, out width, out height);
+        Error error;
+        byte[] rgba = Texture2DExt.LoadRGBAFromWebP(webpBytes, ref width, ref height, false, out error);
+        if (error != Error.Success || rgba == null)
+            throw new Exception($"Failed to decode WebP image {debugName}: {error}");
+
+        return rgba;
     }
 
     // Movie loading state
@@ -534,6 +584,7 @@ public class RuntimeSplatLoader : MonoBehaviour
     int _movieMaxConcurrency;
     bool _movieLoadFailed;
     System.Diagnostics.Stopwatch _movieLoadStopwatch;
+    string _movieLastError;
 
     // ── End Movie Mode ────────────────────────────────────────────────────────
 
@@ -742,7 +793,6 @@ public class RuntimeSplatLoader : MonoBehaviour
         var props = new List<string>();
         int vertexCount = 0;
         bool inVertex = false;
-        string headerEnd;
         long headerBytes = 0;
 
         using (var headerReader = new StreamReader(fs, Encoding.ASCII, false, 4096, leaveOpen: true))

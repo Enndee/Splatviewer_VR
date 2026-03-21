@@ -290,9 +290,9 @@ MonoBehaviour:
   m_RenderOrder: 0
   m_SplatScale: 1
   m_OpacityScale: 1
-  m_SHOrder: 0
+  m_SHOrder: 1
   m_SHOnly: 0
-  m_SortNthFrame: 24
+  m_SortNthFrame: 12
   m_RenderMode: 0
   m_PointDisplaySize: 3
   m_Cutouts: []

@@ -26,6 +26,7 @@ public sealed class ViewerStartup : MonoBehaviour
 
     void Awake()
     {
+        ApplyPerformanceDefaults();
         ApplyWindowMode();
         _pendingFilePath = FindLaunchFilePath();
     }
@@ -46,8 +47,21 @@ public sealed class ViewerStartup : MonoBehaviour
 
     static void ApplyWindowMode()
     {
-        Screen.fullScreenMode = FullScreenMode.FullScreenWindow;
-        Screen.fullScreen = true;
+        int width = Display.main != null ? Display.main.systemWidth : Screen.currentResolution.width;
+        int height = Display.main != null ? Display.main.systemHeight : Screen.currentResolution.height;
+        Screen.SetResolution(width, height, FullScreenMode.Windowed);
+        Screen.fullScreen = false;
+    }
+
+    static void ApplyPerformanceDefaults()
+    {
+        // Uncap frame rate on desktop so the GPU isn't artificially throttled.
+        // In VR the headset compositor controls vsync, so this is harmless.
+        Application.targetFrameRate = -1;
+        QualitySettings.vSyncCount = 0;
+
+        // Disable physics simulation — pure viewer, no rigidbodies.
+        Physics.simulationMode = SimulationMode.Script;
     }
 
     static void InitializeDesktopCursorState()
@@ -120,8 +134,8 @@ public sealed class ViewerStartup : MonoBehaviour
         }
 
         var browser = FindAnyObjectByType<VRFileBrowser>();
-        if (browser != null && !string.IsNullOrEmpty(folder))
-            browser.SetCurrentFolder(folder);
+        if (browser != null)
+            browser.SetCurrentFile(filePath);
 
         var rig = FindAnyObjectByType<VRRig>();
         if (rig != null)
