@@ -4,6 +4,8 @@
 
 This fork is based on [aras-p/UnityGaussianSplatting](https://github.com/aras-p/UnityGaussianSplatting) and adds a standalone VR viewer with runtime loading for Gaussian splat files.
 
+https://github.com/user-attachments/assets/1d65e92e-f472-4bf0-a36a-4ca76a7d70a8
+
 ## What This Fork Adds
 
 - A dedicated Unity project at `projects/Splatviewer_VR`.
