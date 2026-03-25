@@ -26,10 +26,9 @@ https://github.com/user-attachments/assets/1d65e92e-f472-4bf0-a36a-4ca76a7d70a8
 - Command-line file opening for `.ply`, `.spz`, `.spx`, and `.sog` shell associations.
 - Smooth locomotion and snap turn.
 - Controller buttons for moving between splat files.
+- IMPORTANT: put your splat files here: Quest 3\internal memory\Android\data\com.enndee.splatviewervr.android\files\Splats
 
 ## Controls
-
-### VR
 
 - Left stick: move.
 - Right stick X: snap turn.
