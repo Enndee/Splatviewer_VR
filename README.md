@@ -24,13 +24,8 @@ https://github.com/user-attachments/assets/1d65e92e-f472-4bf0-a36a-4ca76a7d70a8
 
 - Runtime loading of `.ply`, `.spz`, `.spx`, and bundled PlayCanvas `.sog` splat files.
 - Command-line file opening for `.ply`, `.spz`, `.spx`, and `.sog` shell associations.
-- OpenXR-based VR support.
 - Smooth locomotion and snap turn.
 - Controller buttons for moving between splat files.
-- Browser preload caching with a configurable RAM budget.
-- Folder movie mode with adjustable playback FPS.
-- Full desktop mode when running without a headset.
-- Fullscreen windowed startup for desktop and VR mirror view.
 
 ## Controls
 
@@ -78,38 +73,6 @@ Highlights:
 
 The source tree does not include sample splat data. Add your own `.ply`, `.spz`, `.spx`, or bundled `.sog` files and point the viewer to the folder you want to browse.
 
-If the viewer is launched with a `.ply`, `.spz`, `.spx`, or `.sog` file path on the command line, it will automatically load that file on startup. This is the basis for Windows Explorer file associations.
-
-PlayCanvas `.sog` support targets bundled `.sog` archives with WebP-backed property images as described in the PlayCanvas format specification.
-
-## Windows File Association
-
-You can register `.ply`, `.spz`, `.spx`, and `.sog` to open with the viewer by running either the root-level release copy or the `tools/` copy:
-
-- `Register-SplatviewerFileAssociations.bat`
-- `Register-SplatviewerFileAssociations.ps1`
-- `tools/Register-SplatviewerFileAssociations.bat`
-- `tools/Register-SplatviewerFileAssociations.ps1`
-
-The helper writes per-user file associations under `HKCU\Software\Classes`, so administrator rights are not required.
-
-If needed, pass a custom executable path to the PowerShell script:
-
-- `Register-SplatviewerFileAssociations.ps1 -ExecutablePath "C:\Path\To\SplatViewer_VR.exe"`
-- `Register-SplatviewerFileAssociations.ps1 -Unregister`
-
-The 1.4 Windows release package includes the `.bat` and `.ps1` helpers next to `SplatViewer_VR.exe`.
-
-## Building A Release
-
-The packaged Windows player for the current release is built into `projects/Splatviewer_VR/Release/1.4`.
-
-For GitHub releases, use the zip package generated from that folder instead of committing the raw build output. The repository ignores `projects/**/Release/` so source control stays focused on source, project config, and documentation.
-
-## Release Files
-
-- Release notes: `RELEASE_NOTES.md`
-- Release package output: `releases/Splatviewer_VR_v1.4_Windows_x64.zip`
 
 ## Upstream Credits
 
