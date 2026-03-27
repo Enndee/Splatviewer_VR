@@ -206,7 +206,7 @@ internal static class SpxReader
                 fy = DecodeLog(fy, logTimes);
                 fz = DecodeLog(fz, logTimes);
             }
-            s.pos = new float3(fx, fy, fz);
+            s.pos = GaussianUtils.MirrorPositionX(new float3(fx, fy, fz));
 
             // Scale: exp(byte/16 - 10)
             s.scale = new float3(
@@ -229,6 +229,7 @@ internal static class SpxReader
             float ry = (data[off + n * 18 + i] - 128f) / 128f;
             float rz = (data[off + n * 19 + i] - 128f) / 128f;
             float4 q = math.normalize(new float4(rx, ry, rz, rw)); // (x,y,z,w)
+            q = GaussianUtils.MirrorRotationX(q);
             s.rot = GaussianUtils.PackSmallest3Rotation(q);
 
             // Store palette index in sh[0].x for later SH palette lookup
@@ -310,7 +311,7 @@ internal static class SpxReader
                 fy = DecodeLog(fy, logTimes);
                 fz = DecodeLog(fz, logTimes);
             }
-            s.pos = new float3(fx, fy, fz);
+            s.pos = GaussianUtils.MirrorPositionX(new float3(fx, fy, fz));
 
             // Scale: exp(byte/16 - 10)
             s.scale = new float3(
@@ -343,6 +344,7 @@ internal static class SpxReader
             }
             // q is now (x,y,z,w)
             q = math.normalize(q);
+            q = GaussianUtils.MirrorRotationX(q);
             s.rot = GaussianUtils.PackSmallest3Rotation(q);
 
             // Palette index for SH
