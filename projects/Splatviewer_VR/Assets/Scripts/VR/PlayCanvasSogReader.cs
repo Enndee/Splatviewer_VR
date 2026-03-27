@@ -186,7 +186,7 @@ internal static class PlayCanvasSogReader
         float nx = math.lerp(meta.means.mins[0], meta.means.maxs[0], qx / 65535f);
         float ny = math.lerp(meta.means.mins[1], meta.means.maxs[1], qy / 65535f);
         float nz = math.lerp(meta.means.mins[2], meta.means.maxs[2], qz / 65535f);
-        return new float3(Unlog(nx), Unlog(ny), Unlog(nz));
+        return GaussianUtils.MirrorPositionX(new float3(Unlog(nx), Unlog(ny), Unlog(nz)));
     }
 
     static float Unlog(float value)
@@ -226,7 +226,8 @@ internal static class PlayCanvasSogReader
             3 => new float4(b, c, omitted, a),        // z omitted; a=w, b=x, c=y → (x, y, z, w)
             _ => throw new InvalidOperationException(),
         };
-        return GaussianUtils.PackSmallest3Rotation(math.normalize(q));
+        q = GaussianUtils.MirrorRotationX(q);
+        return GaussianUtils.PackSmallest3Rotation(q);
     }
 
     static float DecodeQuatComponent(byte value)

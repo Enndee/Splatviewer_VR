@@ -911,11 +911,11 @@ public class RuntimeSplatLoader : MonoBehaviour
 
             ref SplatData s = ref splats[v];
 
-            s.pos = new float3(
+            s.pos = GaussianUtils.MirrorPositionX(new float3(
                 iX >= 0 ? floatBuf[iX] : 0f,
                 iY >= 0 ? floatBuf[iY] : 0f,
                 iZ >= 0 ? floatBuf[iZ] : 0f
-            );
+            ));
 
             float3 rawDc0 = new float3(
                 iDc0 >= 0 ? floatBuf[iDc0] : 0f,
@@ -939,6 +939,7 @@ public class RuntimeSplatLoader : MonoBehaviour
                 iRot3 >= 0 ? floatBuf[iRot3] : 0f
             );
             q = GaussianUtils.NormalizeSwizzleRotation(q);
+            q = GaussianUtils.MirrorRotationX(q);
             s.rot = GaussianUtils.PackSmallest3Rotation(q);
 
             if (shIdx != null)
@@ -1013,11 +1014,11 @@ public class RuntimeSplatLoader : MonoBehaviour
 
             // Position: 3 × 24-bit signed integer, scaled by fractScale
             int pBase = posOff + i * 9;
-            s.pos = new float3(
+            s.pos = GaussianUtils.MirrorPositionX(new float3(
                 SignExtend24(raw[pBase + 0] | (raw[pBase + 1] << 8) | (raw[pBase + 2] << 16)) * fractScale,
                 SignExtend24(raw[pBase + 3] | (raw[pBase + 4] << 8) | (raw[pBase + 5] << 16)) * fractScale,
                 SignExtend24(raw[pBase + 6] | (raw[pBase + 7] << 8) | (raw[pBase + 8] << 16)) * fractScale
-            );
+            ));
 
             // Alpha: 1 byte [0,255] → [0,1]
             s.opacity = raw[alphaOff + i] / 255f;
@@ -1046,6 +1047,7 @@ public class RuntimeSplatLoader : MonoBehaviour
             );
             float rw = math.sqrt(math.max(0f, 1f - math.dot(rxyz, rxyz)));
             float4 q = math.normalize(new float4(rxyz, rw));
+            q = GaussianUtils.MirrorRotationX(q);
             s.rot = GaussianUtils.PackSmallest3Rotation(q);
 
             // SH coefficients

@@ -22,6 +22,16 @@ namespace GaussianSplatting.Runtime
             return math.abs(math.exp(logScale));
         }
 
+        public static float3 MirrorPositionX(float3 pos)
+        {
+            return new float3(-pos.x, pos.y, pos.z);
+        }
+
+        public static float4 MirrorRotationX(float4 q)
+        {
+            return math.normalize(new float4(q.x, -q.y, -q.z, q.w));
+        }
+
         public static float SquareCentered01(float x)
         {
             x -= 0.5f;
