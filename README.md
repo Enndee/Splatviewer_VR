@@ -33,10 +33,9 @@ https://github.com/user-attachments/assets/4665c9fa-1f44-4b2c-a258-9eb19ebe854e
 - Folder movie mode with progressive loading and adjustable playback FPS.
 - Full desktop mode when running without a headset.
 - Fullscreen windowed startup for desktop and VR mirror view.
+- IMPORTANT: put your Quest splat files here: `Quest 3\internal memory\Android\data\com.enndee.splatviewervr.android\files\Splats`
 
 ## Controls
-
-### VR
 
 - Left stick: move.
 - Right stick X: continuous turn.
